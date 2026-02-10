@@ -23,35 +23,25 @@ static void pacct_setup_workfn(struct work_struct *work)
 		// unter Lock einen Kandidaten finden und ref nehmen
 		spin_lock(&traced_tasks_lock);
 		list_for_each_entry(e, &traced_tasks, list) {
-			// if (!e->ready && e->needs_setup) {
-			// 	e->needs_setup = false;
-			// 	kref_get(&e->ref_count);
-			// 	break;
-			// }
-			// e = NULL;
+			if (!e->ready && e->needs_setup) {
+				kref_get(&e->ref_count);
+
+				e->needs_setup = false;
+				WRITE_ONCE(e->ready,
+					   setup_traced_task_counters(e) == 0);
+
+				pr_info_ratelimited(
+					"Setup perf events for PID %d: %s\n",
+					e->pid,
+					e->ready ? "success" : "failure");
+
+				kref_put(&e->ref_count, release_traced_task);
+			}
 		}
 		spin_unlock(&traced_tasks_lock);
 
-		// pr_info_ratelimited("Found traced task for setup: PID %d\n",
-		// 		    e ? e->pid : -1);
-
-		// if (!e)
-		// 	break;
-
-		// ohne Lock: perf events anlegen (darf schlafen)
-		// if (setup_traced_task_counters(e) == 0)
-		// 	WRITE_ONCE(e->ready, true);
-		// else
-		// 	WRITE_ONCE(e->ready, false);
-
-		// pr_info_ratelimited("Setup perf events for PID %d: %s\n",
-		// 		    e->pid, e->ready ? "success" : "failure");
-
-		kref_put(&e->ref_count, release_traced_task);
-
 		if (!atomic_xchg(&need_work, 0))
 			break;
-
 		atomic_set(&need_work, 1);
 	}
 }

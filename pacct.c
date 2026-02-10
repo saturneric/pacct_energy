@@ -88,18 +88,25 @@ err:
 
 int setup_traced_task_counters(struct traced_task *entry)
 {
+	int ret;
+	kref_get(&entry->ref_count);
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 		if (entry->event[i] && !IS_ERR(entry->event[i]))
 			continue; // Counter already set up for this event
 
-		if (setup_task_counter(entry->pid, &entry->event[i],
-				       tracked_events[i].event_code,
-				       tracked_events[i].umask) < 0) {
-			pr_err("Failed to set up counter for PID %d event code 0x%02x umask 0x%02x\n",
+		ret = setup_task_counter(entry->pid, &entry->event[i],
+					 tracked_events[i].event_code,
+					 tracked_events[i].umask);
+		if (ret < 0) {
+			pr_err("Failed to set up counter for PID %d event code 0x%02x "
+			       "umask 0x%02x ret %d\n",
 			       entry->pid, tracked_events[i].event_code,
-			       tracked_events[i].umask);
-			return -1;
+			       tracked_events[i].umask, ret);
+			goto err;
 		}
 	}
 	return 0;
+err:
+	kref_put(&entry->ref_count, release_traced_task);
+	return ret;
 }

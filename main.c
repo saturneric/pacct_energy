@@ -105,14 +105,22 @@ static void probe_sched_switch(void *ignore, bool preempt,
 static void pacct_process_fork(void *ignore, struct task_struct *parent,
 			       struct task_struct *child)
 {
+	// Don't trace kernel threads
+	if (child->flags & PF_KTHREAD) {
+		pr_info_ratelimited(
+			"Skipping fork of kernel thread with PID %d\n",
+			child->pid);
+		goto out;
+	}
+
 	/* nicht schlafen */
 	pr_info_ratelimited("Forked process: parent PID %d, child PID %d\n",
 			    parent->pid, child->pid);
 
-	struct traced_task *e = get_or_create_traced_task(parent->pid, true);
+	struct traced_task *e = get_or_create_traced_task(child->pid, true);
 	if (!e) {
 		pr_err("Failed to get or create traced task for PID %d\n",
-		       parent->pid);
+		       child->pid);
 		return;
 	}
 
