@@ -1,0 +1,25 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/lib/modules/6.18.4/build/include",
+                "/lib/modules/6.18.4/build/include/uapi",
+                "/lib/modules/6.18.4/build/include/generated",
+                "/lib/modules/6.18.4/build/include/generated/uapi",
+                "/lib/modules/6.18.4/build/arch/x86/include",
+                "/lib/modules/6.18.4/build/arch/x86/include/uapi",
+                "/lib/modules/6.18.4/build/arch/x86/include/generated",
+                "/lib/modules/6.18.4/build/arch/x86/include/generated/uapi"
+            ],
+            "defines": [
+                "__KERNEL__",
+                "MODULE",
+                "KBUILD_MODNAME"
+            ],
+            "compilerPath": "/usr/bin/gcc"
+        }
+    ],
+    "version": 4
+}
