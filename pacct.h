@@ -68,7 +68,8 @@ struct traced_task *new_traced_task(pid_t pid);
 void release_traced_task(struct kref *kref);
 int setup_traced_task_counters(struct traced_task *entry);
 
-struct task_struct *get_task_by_pid(pid_t pid);
-
 void queue_pacct_setup_work(void);
 void queue_pacct_retire_work(void);
+
+struct task_struct *get_task_by_pid(pid_t pid);
+u64 read_event_count(struct perf_event *ev);

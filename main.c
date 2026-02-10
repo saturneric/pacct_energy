@@ -24,24 +24,6 @@ struct list_head retiring_traced_tasks;
 // Lock to protect access to the traced_tasks list
 spinlock_t traced_tasks_lock;
 
-static u64 read_event_count(struct perf_event *ev)
-{
-	// the time (in perf time units) the event was enabled (counting or not)
-	u64 enabled = 0;
-	// the time (in perf time units) the event was actually running (counting)
-	u64 running = 0;
-
-	if (!ev)
-		return 0;
-
-	// Read the raw count and scale it based on the time the event was enabled and running
-	u64 val = perf_event_read_value(ev, &enabled, &running);
-
-	// Scale the raw count to account for time when the event was enabled but not running
-	u64 scaled = (running ? div64_u64(val * enabled, running) : val);
-	return scaled;
-}
-
 static struct traced_task *get_or_create_traced_task(pid_t pid, bool create)
 {
 	struct traced_task *entry;
@@ -86,25 +68,23 @@ static void probe_sched_switch(void *ignore, bool preempt,
 			       struct task_struct *prev,
 			       struct task_struct *next)
 {
-	// struct traced_task *e = get_or_create_traced_task(prev->pid);
-	// if (!e) {
-	// 	pr_err("Failed to get or create traced task for PID %d\n",
-	// 	       prev->pid);
-	// 	return;
-	// }
+	struct traced_task *e = get_traced_task(prev->pid);
+	if (!e)
+		return;
 
-	// if (!READ_ONCE(e->ready)) {
-	// 	WRITE_ONCE(e->needs_setup, true);
-	// 	goto out;
-	// }
+	if (!READ_ONCE(e->ready)) {
+		WRITE_ONCE(e->needs_setup, true);
+		goto out;
+	}
 
-	// for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
-	// 	if (e->event[i] && !IS_ERR(e->event[i]))
-	// 		e->counts[i] = read_event_count(e->event[i]);
-	// }
+	// Read and store the current counts for all events for this task
+	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
+		if (e->event[i] && !IS_ERR(e->event[i]))
+			e->counts[i] = read_event_count(e->event[i]);
+	}
 
-	// out:
-	// 	kref_put(&e->ref_count, release_traced_task);
+out:
+	kref_put(&e->ref_count, release_traced_task);
 }
 
 static void pacct_process_fork(void *ignore, struct task_struct *parent,
@@ -112,15 +92,13 @@ static void pacct_process_fork(void *ignore, struct task_struct *parent,
 {
 	// Don't trace kernel threads
 	if (child->flags & PF_KTHREAD) {
-		pr_info_ratelimited(
-			"Skipping fork of kernel thread with PID %d\n",
+		pr_info("Skipping fork of kernel thread with PID %d\n",
 			child->pid);
-		goto out;
+		return;
 	}
 
-	/* nicht schlafen */
-	pr_info_ratelimited("Forked process: parent PID %d, child PID %d\n",
-			    parent->pid, child->pid);
+	pr_info("Forked process: parent PID %d, child PID %d\n", parent->pid,
+		child->pid);
 
 	struct traced_task *e = get_or_create_traced_task(child->pid, true);
 	if (!e) {
@@ -131,17 +109,14 @@ static void pacct_process_fork(void *ignore, struct task_struct *parent,
 
 	queue_pacct_setup_work();
 
-out:
 	kref_put(&e->ref_count, release_traced_task);
 }
 
 static void pacct_process_exit(void *ignore, struct task_struct *p)
 {
 	struct traced_task *e = get_traced_task(p->pid);
-	if (!e) {
-		pr_warn("Cannot find traced task for PID %d\n", p->pid);
+	if (!e)
 		return;
-	}
 
 	struct traced_task *it;
 
