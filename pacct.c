@@ -16,7 +16,7 @@ struct traced_task *new_traced_task(pid_t pid)
 		return NULL;
 	}
 
-	kref_init(&entry->ref);
+	kref_init(&entry->ref_count);
 	entry->pid = pid;
 	entry->ready = false;
 	entry->needs_setup = true;
@@ -30,7 +30,8 @@ struct traced_task *new_traced_task(pid_t pid)
 
 void release_traced_task(struct kref *kref)
 {
-	struct traced_task *entry = container_of(kref, struct traced_task, ref);
+	struct traced_task *entry =
+		container_of(kref, struct traced_task, ref_count);
 
 	// Disable and release all events for this traced task
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
@@ -39,6 +40,7 @@ void release_traced_task(struct kref *kref)
 			perf_event_release_kernel(entry->event[i]);
 		}
 	}
+
 	kfree(entry);
 }
 

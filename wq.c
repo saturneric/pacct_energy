@@ -12,44 +12,47 @@
 extern struct list_head traced_tasks;
 extern spinlock_t traced_tasks_lock;
 
-static struct workqueue_struct *pacct_wq;
-static atomic_t setup_pending = ATOMIC_INIT(0);
+static atomic_t need_work = ATOMIC_INIT(0);
 
 static void pacct_setup_workfn(struct work_struct *work)
 {
 	struct traced_task *e;
-
-	// Job darf später erneut geplant werden
-	atomic_set(&setup_pending, 0);
-
 	for (;;) {
-		e = NULL;
+		atomic_set(&need_work, 0);
 
 		// unter Lock einen Kandidaten finden und ref nehmen
 		spin_lock(&traced_tasks_lock);
 		list_for_each_entry(e, &traced_tasks, list) {
-			if (!e->ready && e->needs_setup) {
-				e->needs_setup = false;
-				kref_get(&e->ref); // Work hält Referenz
-				break;
-			}
-			e = NULL;
+			// if (!e->ready && e->needs_setup) {
+			// 	e->needs_setup = false;
+			// 	kref_get(&e->ref_count);
+			// 	break;
+			// }
+			// e = NULL;
 		}
 		spin_unlock(&traced_tasks_lock);
 
-		if (!e)
-			break;
+		// pr_info_ratelimited("Found traced task for setup: PID %d\n",
+		// 		    e ? e->pid : -1);
+
+		// if (!e)
+		// 	break;
 
 		// ohne Lock: perf events anlegen (darf schlafen)
-		if (setup_traced_task_counters(e) == 0)
-			WRITE_ONCE(e->ready, true);
-		else
-			WRITE_ONCE(e->ready, false);
+		// if (setup_traced_task_counters(e) == 0)
+		// 	WRITE_ONCE(e->ready, true);
+		// else
+		// 	WRITE_ONCE(e->ready, false);
 
-		pr_info("Setup perf events for PID %d: %s\n", e->pid,
-			e->ready ? "success" : "failure");
+		// pr_info_ratelimited("Setup perf events for PID %d: %s\n",
+		// 		    e->pid, e->ready ? "success" : "failure");
 
-		kref_put(&e->ref, release_traced_task);
+		kref_put(&e->ref_count, release_traced_task);
+
+		if (!atomic_xchg(&need_work, 0))
+			break;
+
+		atomic_set(&need_work, 1);
 	}
 }
 
@@ -57,24 +60,6 @@ static DECLARE_WORK(pacct_setup_work, pacct_setup_workfn);
 
 void queue_pacct_setup_work(void)
 {
-	if (atomic_xchg(&setup_pending, 1) == 0)
-		queue_work(pacct_wq, &pacct_setup_work);
-}
-
-int pacct_init_workqueue(void)
-{
-	pacct_wq = alloc_workqueue("pacct_wq", WQ_UNBOUND | WQ_MEM_RECLAIM, 1);
-	if (!pacct_wq)
-		return -ENOMEM;
-	return 0;
-}
-
-void pacct_cleanup_workqueue(void)
-{
-	if (pacct_wq) {
-		// warten, bis alle Jobs fertig sind
-		flush_workqueue(pacct_wq);
-		destroy_workqueue(pacct_wq);
-		pacct_wq = NULL;
-	}
+	atomic_set(&need_work, 1);
+	queue_work(system_unbound_wq, &pacct_setup_work);
 }

@@ -13,6 +13,8 @@ MODULE_LICENSE("GPL");
 MODULE_VERSION("0.1");
 
 static struct tracepoint *tp_sched_switch; // Tracepoint for sched_switch events
+static struct tracepoint *tp_sched_exit;
+static struct tracepoint *tp_sched_fork;
 
 struct list_head traced_tasks; // List of tasks being traced
 spinlock_t traced_tasks_lock; // Lock to protect access to the traced_tasks list
@@ -35,15 +37,7 @@ static u64 read_event_count(struct perf_event *ev)
 	return scaled;
 }
 
-static void tp_lookup_cb(struct tracepoint *tp, void *priv)
-{
-	const char *name = tp->name;
-	if (name && strcmp(name, "sched_switch") == 0) {
-		*(struct tracepoint **)priv = tp;
-	}
-}
-
-static struct traced_task *get_or_create_traced_task(pid_t pid)
+static struct traced_task *get_or_create_traced_task(pid_t pid, bool create)
 {
 	struct traced_task *entry;
 
@@ -53,6 +47,12 @@ static struct traced_task *get_or_create_traced_task(pid_t pid)
 			// Found an existing entry for this PID, increment refcount and return it
 			goto out;
 		}
+	}
+
+	if (!create) {
+		// No existing entry found and creation not allowed, return NULL
+		entry = NULL;
+		goto err;
 	}
 
 	// No existing entry found, create a new one
@@ -66,33 +66,90 @@ static struct traced_task *get_or_create_traced_task(pid_t pid)
 
 out:
 	// Increment refcount for the new entry
-	kref_get(&entry->ref);
+	kref_get(&entry->ref_count);
 err:
 	spin_unlock(&traced_tasks_lock);
 	return entry;
+}
+
+static struct traced_task *get_traced_task(pid_t pid)
+{
+	return get_or_create_traced_task(pid, false);
 }
 
 static void probe_sched_switch(void *ignore, bool preempt,
 			       struct task_struct *prev,
 			       struct task_struct *next)
 {
-	struct traced_task *e = get_or_create_traced_task(prev->pid);
-	if (!e)
+	// struct traced_task *e = get_or_create_traced_task(prev->pid);
+	// if (!e) {
+	// 	pr_err("Failed to get or create traced task for PID %d\n",
+	// 	       prev->pid);
+	// 	return;
+	// }
+
+	// if (!READ_ONCE(e->ready)) {
+	// 	WRITE_ONCE(e->needs_setup, true);
+	// 	goto out;
+	// }
+
+	// for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
+	// 	if (e->event[i] && !IS_ERR(e->event[i]))
+	// 		e->counts[i] = read_event_count(e->event[i]);
+	// }
+
+	// out:
+	// 	kref_put(&e->ref_count, release_traced_task);
+}
+
+static void pacct_process_fork(void *ignore, struct task_struct *parent,
+			       struct task_struct *child)
+{
+	/* nicht schlafen */
+	pr_info_ratelimited("Forked process: parent PID %d, child PID %d\n",
+			    parent->pid, child->pid);
+
+	struct traced_task *e = get_or_create_traced_task(parent->pid, true);
+	if (!e) {
+		pr_err("Failed to get or create traced task for PID %d\n",
+		       parent->pid);
 		return;
-
-	if (!READ_ONCE(e->ready)) {
-		WRITE_ONCE(e->needs_setup, true);
-		queue_pacct_setup_work();
-		goto out;
 	}
 
-	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
-		if (e->event[i] && !IS_ERR(e->event[i]))
-			e->counts[i] = read_event_count(e->event[i]);
-	}
+	queue_pacct_setup_work();
 
 out:
-	kref_put(&e->ref, release_traced_task);
+	kref_put(&e->ref_count, release_traced_task);
+}
+
+static void pacct_process_exit(void *ignore, struct task_struct *p)
+{
+	struct traced_task *e = get_traced_task(p->pid);
+	if (!e) {
+		pr_warn("Cannot find traced task for PID %d\n", p->pid);
+		return;
+	}
+
+	// // reduce refcount for the traced task entry
+	// // corresponding to the exiting process
+	// kref_put(&e->ref_count, release_traced_task);
+
+	// // last kref_put to possibly free the traced_task entry
+	kref_put(&e->ref_count, release_traced_task);
+}
+
+static void tp_lookup_cb(struct tracepoint *tp, void *priv)
+{
+	const char *name = priv;
+
+	if (!strcmp(tp->name, name)) {
+		if (!strcmp(name, "sched_switch"))
+			tp_sched_switch = tp;
+		else if (!strcmp(name, "sched_process_exit"))
+			tp_sched_exit = tp;
+		else if (!strcmp(name, "sched_process_fork"))
+			tp_sched_fork = tp;
+	}
 }
 
 static int __init pacct_energy_init(void)
@@ -105,18 +162,25 @@ static int __init pacct_energy_init(void)
 	spin_lock_init(&traced_tasks_lock);
 	INIT_LIST_HEAD(&traced_tasks);
 
-	// Initialize the workqueue for setting up perf events
-	ret = pacct_init_workqueue();
-	if (ret) {
-		pr_err("Failed to initialize workqueue: %d\n", ret);
-		goto err;
-	}
-
-	for_each_kernel_tracepoint(tp_lookup_cb, &tp_sched_switch);
+	for_each_kernel_tracepoint(tp_lookup_cb, "sched_switch");
 	if (!tp_sched_switch) {
 		pr_err("tracepoint sched_switch not found (CONFIG_TRACEPOINTS/TRACE_EVENTS?)\n");
 		ret = -ENOENT;
-		goto err_wq;
+		goto err;
+	}
+
+	for_each_kernel_tracepoint(tp_lookup_cb, "sched_process_fork");
+	if (!tp_sched_fork) {
+		pr_err("tracepoint sched_process_fork not found (CONFIG_TRACEPOINTS/TRACE_EVENTS?)\n");
+		ret = -ENOENT;
+		goto err;
+	}
+
+	for_each_kernel_tracepoint(tp_lookup_cb, "sched_process_exit");
+	if (!tp_sched_exit) {
+		pr_err("tracepoint sched_process_exit not found (CONFIG_TRACEPOINTS/TRACE_EVENTS?)\n");
+		ret = -ENOENT;
+		goto err;
 	}
 
 	// Register the probe function for the sched_switch tracepoint
@@ -124,24 +188,48 @@ static int __init pacct_energy_init(void)
 					(void *)probe_sched_switch, NULL);
 	if (ret) {
 		pr_err("tracepoint_probe_register failed: %d\n", ret);
-		goto err_wq;
+		goto err;
+	}
+
+	ret = tracepoint_probe_register(tp_sched_fork,
+					(void *)pacct_process_fork, NULL);
+	if (ret) {
+		pr_err("tracepoint_probe_register for fork failed: %d\n", ret);
+		goto err_tp_sched_switch;
+	}
+
+	ret = tracepoint_probe_register(tp_sched_exit,
+					(void *)pacct_process_exit, NULL);
+	if (ret) {
+		pr_err("tracepoint_probe_register for exit failed: %d\n", ret);
+		goto err_tp_sched_fork;
 	}
 
 	return 0;
 
-err_wq:
-	pacct_cleanup_workqueue();
+err_tp_sched_fork:
+	tracepoint_probe_unregister(tp_sched_fork, (void *)pacct_process_fork,
+				    NULL);
+err_tp_sched_switch:
+	tracepoint_probe_unregister(tp_sched_switch, (void *)probe_sched_switch,
+				    NULL);
 err:
 	return ret;
 }
 
 static void __exit pacct_energy_exit(void)
 {
-	pr_info("pacct_energy removed\n");
-
 	if (tp_sched_switch)
 		tracepoint_probe_unregister(tp_sched_switch,
 					    (void *)probe_sched_switch, NULL);
+
+	if (tp_sched_fork)
+		tracepoint_probe_unregister(tp_sched_fork,
+					    (void *)pacct_process_fork, NULL);
+
+	if (tp_sched_exit)
+		tracepoint_probe_unregister(tp_sched_exit,
+					    (void *)pacct_process_exit, NULL);
 
 	// Disable and release all events
 	struct list_head retiring_traced_tasks;
@@ -157,10 +245,10 @@ static void __exit pacct_energy_exit(void)
 
 	list_for_each_entry_safe(entry, tmp, &retiring_traced_tasks, list) {
 		list_del(&entry->list);
-		kref_put(&entry->ref, release_traced_task);
+		kref_put(&entry->ref_count, release_traced_task);
 	}
 
-	pacct_cleanup_workqueue();
+	pr_info("pacct_energy removed\n");
 }
 
 module_init(pacct_energy_init);

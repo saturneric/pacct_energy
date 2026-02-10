@@ -55,7 +55,7 @@ static struct {
 struct traced_task {
 	struct list_head list;
 	struct hlist_node hnode;
-	struct kref ref; // Reference count for this traced task entry
+	struct kref ref_count; // Reference count for this traced task entry
 	pid_t pid;
 	bool ready;
 	bool needs_setup;
@@ -70,5 +70,3 @@ int setup_traced_task_counters(struct traced_task *entry);
 struct task_struct *get_task_by_pid(pid_t pid);
 
 void queue_pacct_setup_work(void);
-int pacct_init_workqueue(void);
-void pacct_cleanup_workqueue(void);
