@@ -48,7 +48,6 @@ static struct traced_task *get_or_create_traced_task(pid_t pid)
 	struct traced_task *entry;
 
 	spin_lock(&traced_tasks_lock);
-
 	list_for_each_entry(entry, &traced_tasks, list) {
 		if (entry->pid == pid) {
 			// Found an existing entry for this PID, increment refcount and return it
@@ -58,11 +57,17 @@ static struct traced_task *get_or_create_traced_task(pid_t pid)
 
 	// No existing entry found, create a new one
 	entry = new_traced_task(pid);
+	if (!entry) {
+		pr_err("Failed to create traced task for PID %d\n", pid);
+		goto err;
+	}
+
 	list_add(&entry->list, &traced_tasks);
 
 out:
 	// Increment refcount for the new entry
 	kref_get(&entry->ref);
+err:
 	spin_unlock(&traced_tasks_lock);
 	return entry;
 }
@@ -76,8 +81,9 @@ static void probe_sched_switch(void *ignore, bool preempt,
 		return;
 
 	if (!READ_ONCE(e->ready)) {
+		WRITE_ONCE(e->needs_setup, true);
 		queue_pacct_setup_work();
-		return;
+		goto out;
 	}
 
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
@@ -85,6 +91,7 @@ static void probe_sched_switch(void *ignore, bool preempt,
 			e->counts[i] = read_event_count(e->event[i]);
 	}
 
+out:
 	kref_put(&e->ref, release_traced_task);
 }
 
@@ -102,13 +109,14 @@ static int __init pacct_energy_init(void)
 	ret = pacct_init_workqueue();
 	if (ret) {
 		pr_err("Failed to initialize workqueue: %d\n", ret);
-		return ret;
+		goto err;
 	}
 
 	for_each_kernel_tracepoint(tp_lookup_cb, &tp_sched_switch);
 	if (!tp_sched_switch) {
 		pr_err("tracepoint sched_switch not found (CONFIG_TRACEPOINTS/TRACE_EVENTS?)\n");
-		return -ENOENT;
+		ret = -ENOENT;
+		goto err_wq;
 	}
 
 	// Register the probe function for the sched_switch tracepoint
@@ -116,10 +124,15 @@ static int __init pacct_energy_init(void)
 					(void *)probe_sched_switch, NULL);
 	if (ret) {
 		pr_err("tracepoint_probe_register failed: %d\n", ret);
-		return ret;
+		goto err_wq;
 	}
 
-	return 0; /* success */
+	return 0;
+
+err_wq:
+	pacct_cleanup_workqueue();
+err:
+	return ret;
 }
 
 static void __exit pacct_energy_exit(void)
