@@ -12,6 +12,7 @@
 #define PACCT_SETUP_BUDGET 32
 
 extern struct list_head traced_tasks;
+extern struct list_head retiring_traced_tasks;
 extern spinlock_t traced_tasks_lock;
 
 static bool pick_one_candidate(struct traced_task **out)
@@ -56,4 +57,34 @@ static DECLARE_WORK(pacct_setup_work, pacct_setup_workfn);
 void queue_pacct_setup_work(void)
 {
 	queue_work(system_unbound_wq, &pacct_setup_work);
+}
+
+static void pacct_retire_workfn(struct work_struct *work)
+{
+	struct traced_task *e;
+
+	for (;;) {
+		spin_lock(&traced_tasks_lock);
+
+		if (list_empty(&retiring_traced_tasks)) {
+			spin_unlock(&traced_tasks_lock);
+			break;
+		}
+
+		e = list_first_entry(&retiring_traced_tasks, struct traced_task,
+				     retire_node);
+		list_del_init(&e->retire_node);
+		spin_unlock(&traced_tasks_lock);
+
+		kref_put(&e->ref_count, release_traced_task);
+
+		cond_resched();
+	}
+}
+
+static DECLARE_WORK(pacct_retire_work, pacct_retire_workfn);
+
+void queue_pacct_retire_work(void)
+{
+	queue_work(system_unbound_wq, &pacct_retire_work);
 }

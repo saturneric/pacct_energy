@@ -12,12 +12,17 @@ MODULE_DESCRIPTION("Process Energy Accounting Module");
 MODULE_LICENSE("GPL");
 MODULE_VERSION("0.1");
 
-static struct tracepoint *tp_sched_switch; // Tracepoint for sched_switch events
+// Tracepoint for events
+static struct tracepoint *tp_sched_switch;
 static struct tracepoint *tp_sched_exit;
 static struct tracepoint *tp_sched_fork;
 
-struct list_head traced_tasks; // List of tasks being traced
-spinlock_t traced_tasks_lock; // Lock to protect access to the traced_tasks list
+// List of tasks being traced
+struct list_head traced_tasks;
+// List of tasks that are being retired (for cleanup)
+struct list_head retiring_traced_tasks;
+// Lock to protect access to the traced_tasks list
+spinlock_t traced_tasks_lock;
 
 static u64 read_event_count(struct perf_event *ev)
 {
@@ -138,12 +143,24 @@ static void pacct_process_exit(void *ignore, struct task_struct *p)
 		return;
 	}
 
-	// // reduce refcount for the traced task entry
-	// // corresponding to the exiting process
-	// kref_put(&e->ref_count, release_traced_task);
+	struct traced_task *it;
 
-	// // last kref_put to possibly free the traced_task entry
-	kref_put(&e->ref_count, release_traced_task);
+	spin_lock(&traced_tasks_lock);
+	list_for_each_entry(it, &traced_tasks, list) {
+		if (it->pid == p->pid) {
+			e = it;
+			// remove from traced_tasks
+			list_del_init(&e->list);
+
+			// add to retiring_traced_tasks for cleanup
+			list_add_tail(&e->retire_node, &retiring_traced_tasks);
+
+			// we'd got a ref from get_traced_task()
+			kref_put(&e->ref_count, release_traced_task);
+			break;
+		}
+	}
+	spin_unlock(&traced_tasks_lock);
 }
 
 static void tp_lookup_cb(struct tracepoint *tp, void *priv)
@@ -169,6 +186,7 @@ static int __init pacct_energy_init(void)
 	// Initialize the list of traced tasks and the lock
 	spin_lock_init(&traced_tasks_lock);
 	INIT_LIST_HEAD(&traced_tasks);
+	INIT_LIST_HEAD(&retiring_traced_tasks);
 
 	for_each_kernel_tracepoint(tp_lookup_cb, "sched_switch");
 	if (!tp_sched_switch) {
@@ -243,18 +261,17 @@ static void __exit pacct_energy_exit(void)
 	struct list_head retiring_traced_tasks;
 	INIT_LIST_HEAD(&retiring_traced_tasks);
 
+	// Move all currently traced tasks to the retiring list for cleanup
 	struct traced_task *entry, *tmp;
 	spin_lock(&traced_tasks_lock);
 	list_for_each_entry_safe(entry, tmp, &traced_tasks, list) {
-		list_del(&entry->list);
-		list_add(&entry->list, &retiring_traced_tasks);
+		list_del_init(&entry->list);
+		list_add_tail(&entry->retire_node, &retiring_traced_tasks);
 	}
 	spin_unlock(&traced_tasks_lock);
 
-	list_for_each_entry_safe(entry, tmp, &retiring_traced_tasks, list) {
-		list_del(&entry->list);
-		kref_put(&entry->ref_count, release_traced_task);
-	}
+	// Process retiring tasks to clean up their perf events
+	queue_pacct_retire_work();
 
 	pr_info("pacct_energy removed\n");
 }
