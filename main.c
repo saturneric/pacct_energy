@@ -3,8 +3,9 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/perf_event.h>
-#include <linux/printk.h>
 #include <linux/tracepoint.h>
+
+#include "pacct.h"
 
 MODULE_AUTHOR("pm3");
 MODULE_DESCRIPTION("Process Energy Accounting Module");
@@ -13,93 +14,8 @@ MODULE_VERSION("0.1");
 
 static struct tracepoint *tp_sched_switch; // Tracepoint for sched_switch events
 
-// Define the events we want to track with their event codes and umasks
-static struct tracked_event {
-	u8 event_code;
-	u8 umask;
-} tracked_events[8] = {
-	// CPU_CLK_UNHALTED.THREAD_P
-	{
-		.event_code = 0x3c,
-		.umask = 0x00,
-	},
-	// DTLB_STORE_MISSES.WALK_COMPLETED_4K
-	{
-		.event_code = 0x13,
-		.umask = 0x02,
-	},
-	// BR_MISP_RETIRED.ALL_BRANCHES
-	{
-		.event_code = 0xc5,
-		.umask = 0x00,
-	},
-	// INST_RETIRED.ANY_P
-	{
-		.event_code = 0xc0,
-		.umask = 0x00,
-	},
-	// CPU_CLK_UNHALTED.C0_WAIT
-	{
-		.event_code = 0xec,
-		.umask = 0x70,
-	},
-	// INT_MISC.UOP_DROPPING
-	{
-		.event_code = 0xad,
-		.umask = 0x10,
-	},
-	// EXE_ACTIVITY.1_PORTS_UTIL
-	{
-		.event_code = 0x02,
-		.umask = 0xa6,
-	},
-	// MEM_LOAD_RETIRED.L1_HIT
-	{
-		.event_code = 0xd1,
-		.umask = 0x01,
-	},
-};
-
-#define TRACED_EVENT_COUNT ARRAY_SIZE(tracked_events)
-
-struct traced_task {
-	struct list_head list;
-	struct kref ref; // Reference count for this traced task entry
-	pid_t pid;
-	struct perf_event *event[TRACED_EVENT_COUNT];
-	u64 counts[TRACED_EVENT_COUNT];
-};
-
-static void release_traced_task(struct kref *kref)
-{
-	struct traced_task *entry = container_of(kref, struct traced_task, ref);
-
-	// Disable and release all events for this traced task
-	for (int i = 0; i < TRACED_EVENT_COUNT; i++) {
-		if (entry->event[i] && !IS_ERR(entry->event[i])) {
-			perf_event_disable(entry->event[i]);
-			perf_event_release_kernel(entry->event[i]);
-		}
-	}
-	kfree(entry);
-}
-
-static struct list_head traced_tasks; // List of tasks being traced
-static spinlock_t
-	traced_tasks_lock; // Lock to protect access to the traced_tasks list
-
-struct task_struct *get_task_by_pid(pid_t pid)
-{
-	struct task_struct *task = NULL;
-
-	rcu_read_lock();
-	task = pid_task(find_vpid(pid), PIDTYPE_PID);
-	if (task)
-		get_task_struct(task);
-	rcu_read_unlock();
-
-	return task; // muss später put_task_struct()
-}
+struct list_head traced_tasks; // List of tasks being traced
+spinlock_t traced_tasks_lock; // Lock to protect access to the traced_tasks list
 
 static u64 read_event_count(struct perf_event *ev)
 {
@@ -127,67 +43,7 @@ static void tp_lookup_cb(struct tracepoint *tp, void *priv)
 	}
 }
 
-static int setup_task_counter(pid_t pid, struct perf_event **event,
-			      u8 event_code, u8 umask)
-{
-	int ret;
-	struct perf_event_attr attr;
-	struct task_struct *t;
-	u64 raw = (u64)event_code | ((u64)umask << 8);
-
-	memset(&attr, 0, sizeof(attr));
-	attr.type = PERF_TYPE_RAW;
-	attr.config = raw;
-	attr.size = sizeof(attr);
-
-	attr.disabled = 1;
-	attr.exclude_kernel = 0;
-	attr.exclude_user = 0;
-	attr.exclude_hv = 0;
-
-	t = get_task_by_pid(pid);
-
-	if (!t) {
-		ret = -ESRCH;
-		goto err;
-	}
-
-	*event = perf_event_create_kernel_counter(&attr, -1, t, NULL, NULL);
-	put_task_struct(t);
-
-	if (IS_ERR(*event)) {
-		pr_err("Failed to create perf event for PID %d: %ld\n", pid,
-		       PTR_ERR(*event));
-		ret = -1;
-		goto err;
-	}
-
-	perf_event_enable(*event);
-	return 0;
-
-err:
-	return ret;
-}
-
-static int setup_traced_task_counters(struct traced_task *entry)
-{
-	for (int i = 0; i < TRACED_EVENT_COUNT; i++) {
-		if (entry->event[i] && !IS_ERR(entry->event[i]))
-			continue; // Counter already set up for this event
-
-		if (setup_task_counter(entry->pid, &entry->event[i],
-				       tracked_events[i].event_code,
-				       tracked_events[i].umask) < 0) {
-			pr_err("Failed to set up counter for PID %d event code 0x%02x umask 0x%02x\n",
-			       entry->pid, tracked_events[i].event_code,
-			       tracked_events[i].umask);
-			return -1;
-		}
-	}
-	return 0;
-}
-
-static struct traced_task *get_traced_task(pid_t pid)
+static struct traced_task *get_or_create_traced_task(pid_t pid)
 {
 	struct traced_task *entry;
 
@@ -196,30 +52,16 @@ static struct traced_task *get_traced_task(pid_t pid)
 	list_for_each_entry(entry, &traced_tasks, list) {
 		if (entry->pid == pid) {
 			// Found an existing entry for this PID, increment refcount and return it
-			kref_get(&entry->ref);
-			spin_unlock(&traced_tasks_lock);
-			return entry;
+			goto out;
 		}
 	}
 
-	// If the previous task is not being traced, set up counters for it
-	// we should not sleep while holding the lock
-	entry = kzalloc(sizeof(*entry), GFP_ATOMIC);
-	if (!entry) {
-		pr_err("Failed to allocate memory for traced_task\n");
-		spin_unlock(&traced_tasks_lock);
-		return NULL;
-	}
-
-	kref_init(&entry->ref);
-	entry->pid = pid;
-	setup_traced_task_counters(entry);
+	// No existing entry found, create a new one
+	entry = new_traced_task(pid);
 	list_add(&entry->list, &traced_tasks);
-	for (int i = 0; i < TRACED_EVENT_COUNT; i++) {
-		entry->counts[i] = 0;
-	}
 
-	// Initialize refcount to 1 for the new entry
+out:
+	// Increment refcount for the new entry
 	kref_get(&entry->ref);
 	spin_unlock(&traced_tasks_lock);
 	return entry;
@@ -229,19 +71,21 @@ static void probe_sched_switch(void *ignore, bool preempt,
 			       struct task_struct *prev,
 			       struct task_struct *next)
 {
-	struct traced_task *prev_entry = get_traced_task(prev->pid);
-	if (!prev_entry) {
-		pr_err("Failed to get traced task for PID %d\n", prev->pid);
+	struct traced_task *e = get_or_create_traced_task(prev->pid);
+	if (!e)
+		return;
+
+	if (!READ_ONCE(e->ready)) {
+		queue_pacct_setup_work();
 		return;
 	}
 
-	for (int i = 0; i < TRACED_EVENT_COUNT; i++) {
-		if (prev_entry->event[i] && !IS_ERR(prev_entry->event[i]))
-			prev_entry->counts[i] =
-				read_event_count(prev_entry->event[i]);
+	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
+		if (e->event[i] && !IS_ERR(e->event[i]))
+			e->counts[i] = read_event_count(e->event[i]);
 	}
 
-	kref_put(&prev_entry->ref, release_traced_task);
+	kref_put(&e->ref, release_traced_task);
 }
 
 static int __init pacct_energy_init(void)
@@ -253,6 +97,13 @@ static int __init pacct_energy_init(void)
 	// Initialize the list of traced tasks and the lock
 	spin_lock_init(&traced_tasks_lock);
 	INIT_LIST_HEAD(&traced_tasks);
+
+	// Initialize the workqueue for setting up perf events
+	ret = pacct_init_workqueue();
+	if (ret) {
+		pr_err("Failed to initialize workqueue: %d\n", ret);
+		return ret;
+	}
 
 	for_each_kernel_tracepoint(tp_lookup_cb, &tp_sched_switch);
 	if (!tp_sched_switch) {
@@ -291,10 +142,12 @@ static void __exit pacct_energy_exit(void)
 	}
 	spin_unlock(&traced_tasks_lock);
 
-	list_for_each_entry_safe(entry, tmp, &traced_tasks, list) {
+	list_for_each_entry_safe(entry, tmp, &retiring_traced_tasks, list) {
 		list_del(&entry->list);
 		kref_put(&entry->ref, release_traced_task);
 	}
+
+	pacct_cleanup_workqueue();
 }
 
 module_init(pacct_energy_init);
