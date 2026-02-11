@@ -25,8 +25,8 @@ static struct {
 	},
 	// OFFCORE_REQUESTS_OUTSTANDING.DEMAND_DATA_RD
 	{
-		.event_code = 0x01,
-		.umask = 0x20,
+		.event_code = 0x20,
+		.umask = 0x01,
 		.koeff = -239221,
 	},
 	// BR_INST_RETIRED.ALL_BRANCHES

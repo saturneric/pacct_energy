@@ -33,7 +33,10 @@ u64 read_event_count(struct perf_event *ev)
 		return 0;
 
 	// Read the raw count and scale it based on the time the event was enabled and running
-	u64 val = perf_event_read_value(ev, &enabled, &running);
+	u64 val;
+	int ret = perf_event_read_local(ev, &val, &enabled, &running);
+	if (ret)
+		return 0;
 
 	// Scale the raw count to account for time when the event was enabled but not running
 	u64 scaled =
