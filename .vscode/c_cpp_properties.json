@@ -16,7 +16,8 @@
             "defines": [
                 "__KERNEL__",
                 "MODULE",
-                "KBUILD_MODNAME"
+                "KBUILD_MODNAME",
+                "CONFIG_64BIT"
             ],
             "compilerPath": "/usr/bin/gcc"
         }

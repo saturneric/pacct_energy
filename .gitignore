@@ -50,3 +50,4 @@ modules.order
 
 !.gitignore
 !.clang-format
+!.vscode/
