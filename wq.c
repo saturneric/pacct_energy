@@ -10,12 +10,15 @@
 #include "pacct.h"
 
 #define PACCT_SETUP_BUDGET 32
+#define ENERGY_ESTIMATE_PERIOD_MS 1
 
 extern struct list_head traced_tasks;
 extern struct list_head retiring_traced_tasks;
 extern spinlock_t traced_tasks_lock;
 
-static bool pick_one_candidate(struct traced_task **out)
+static atomic_t estimator_enabled = ATOMIC_INIT(0);
+
+static bool pick_one_not_ready_candidate(struct traced_task **out)
 {
 	struct traced_task *e;
 
@@ -42,7 +45,7 @@ static void pacct_setup_workfn(struct work_struct *work)
 	for (; done < PACCT_SETUP_BUDGET; done++) {
 		struct traced_task *e;
 
-		if (!pick_one_candidate(&e))
+		if (!pick_one_not_ready_candidate(&e))
 			break;
 
 		WRITE_ONCE(e->ready, setup_traced_task_counters(e) == 0);
@@ -87,4 +90,70 @@ static DECLARE_WORK(pacct_retire_work, pacct_retire_workfn);
 void queue_pacct_retire_work(void)
 {
 	queue_work(system_unbound_wq, &pacct_retire_work);
+}
+
+static void pacct_energy_estimate_workfn(struct work_struct *work)
+{
+	struct delayed_work *dwork =
+		container_of(work, struct delayed_work, work);
+
+	struct traced_task *e, *n;
+
+	spin_lock(&traced_tasks_lock);
+	list_for_each_entry_safe(e, n, &traced_tasks, list) {
+		kref_get(&e->ref_count);
+
+		if (!READ_ONCE(e->ready) || READ_ONCE(e->energy_updated)) {
+			kref_put(&e->ref_count, release_traced_task);
+			continue;
+		}
+
+		spin_unlock(&traced_tasks_lock);
+
+		// Calculate energy estimation based on diff_counts and coefficients
+		__int128 acc = 0;
+		for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
+			u64 diff = READ_ONCE(e->diff_counts[i]);
+			if (e->event[i] && !IS_ERR(e->event[i]))
+				acc += (__int128)diff * tracked_events[i].koeff;
+
+			// print debug info about this event
+			// pr_info("PID %d, Event %d: diff=%llu, coeff=%lld, partial_energy=%lld\n",
+			// 	e->pid, i, diff, tracked_events[i].koeff,
+			// 	(__int128)diff * tracked_events[i].koeff);
+		}
+
+		atomic64_add((s64)(acc >> 32), &e->energy);
+		WRITE_ONCE(e->energy_updated, true);
+
+		// Release reference
+		kref_put(&e->ref_count, release_traced_task);
+
+		// pr_info("Estimated energy for PID %d: %llu\n", e->pid,
+		// 	atomic64_read(&e->energy));
+
+		spin_lock(&traced_tasks_lock);
+	}
+	spin_unlock(&traced_tasks_lock);
+
+	if (atomic_read(&estimator_enabled))
+		schedule_delayed_work(
+			dwork, msecs_to_jiffies(ENERGY_ESTIMATE_PERIOD_MS));
+}
+
+static DECLARE_DELAYED_WORK(pacct_energy_estimate_work,
+			    pacct_energy_estimate_workfn);
+
+void pacct_start_energy_estimator(void)
+{
+	if (atomic_xchg(&estimator_enabled, 1))
+		return;
+	schedule_delayed_work(&pacct_energy_estimate_work,
+			      msecs_to_jiffies(ENERGY_ESTIMATE_PERIOD_MS));
+}
+
+void pacct_stop_energy_estimator(void)
+{
+	atomic_set(&estimator_enabled, 0);
+	cancel_delayed_work_sync(&pacct_energy_estimate_work);
 }

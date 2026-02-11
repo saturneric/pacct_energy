@@ -6,6 +6,8 @@
 #include <linux/pid.h>
 #include <linux/rcupdate.h>
 #include <linux/sched/task.h>
+#include <linux/perf_event.h>
+#include <linux/math64.h>
 
 struct task_struct *get_task_by_pid(pid_t pid)
 {
@@ -34,6 +36,7 @@ u64 read_event_count(struct perf_event *ev)
 	u64 val = perf_event_read_value(ev, &enabled, &running);
 
 	// Scale the raw count to account for time when the event was enabled but not running
-	u64 scaled = (running ? div64_u64(val * enabled, running) : val);
+	u64 scaled =
+		(running ? mul_u64_u64_div_u64(val, enabled, running) : val);
 	return scaled;
 }
