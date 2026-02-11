@@ -21,6 +21,11 @@ trace hooks function, and in this case, unfortunately, sleep is not allowed.
 Currently, the kernel version on this machine is `6.18.4+`, and the modified
 kernel can be found at `/data/linux`.
 
+## Definition of Energy Estimation
+
+You can find the detailed definition of energy estimation (e.g., pref counter,
+coefficients) in the header file `pacct_energy.h`. 
+
 ## Build 
 
 To build the kernel module, simply run `make` in the project directory. This
@@ -29,7 +34,22 @@ will compile the `pacct_energy.ko` kernel module.
 ## Run
 
 Just run `./run.sh` to test the kernel module. It will load the module, run a
-CPU stress test to generate some events, and then remove the module.
+CPU stress test to generate some events, and then remove the module. In the end,
+it will also print the tail of the kernel log (`dmesg | tail -256`), which
+contains the output from the kernel module.
+
+## Caution
+
+You need to install the `clang-format` extension in your vscode editor to format
+the code or just run `clang-format` as a command. The code style is based on the
+Linux kernel coding style or maybe GNU or Google one, not sure. By the way, you
+can find the details in the file `.clang-format`.
+
+When you modify the kernel module in a wrong way, it may crash the system and
+you cannot recover from it without external intervention. To recover from the
+crash, you need to login to the management system of the lab. Then **reset the
+Intel AMT**but not the system itself. After the reset, the system will be back
+to normal within 15 seconds.
 
 ## Result 
 
