@@ -6,7 +6,8 @@ performance counters. The module tracks various performance events for each
 process and estimates the energy consumption of processes when they exit.
 
 What's done in this project:
-1. Register trace hooks for process fork and exit events to track the lifecycle of processes.
+1. Register trace hooks for process fork and exit events to track the lifecycle
+   of processes.
 2. Currently, Newly created processes after module load will be traced, but not
    the existing ones when the module is loaded. For each process being traced,
    it will store all related information in a `traced_task` structure.
@@ -44,9 +45,10 @@ crash.
 
 Holding a spinlock for a long time is also not allowed in all the situations.
 And use a function like `schedule()` which will cause the current executing
-context to sleep is also not allowed in all the situations. So we need to be
-very careful when we write the code for the kernel module, especially in the
-trace hooks or any other non-process (e.g. interrupt, softirq) context.
+context to sleep when holding a spinlock is also not allowed in all the
+situations. So we need to be very careful when we write the code for the kernel
+module, especially in the trace hooks or any other non-process (e.g. interrupt,
+softirq) context.
 
 Currently, the kernel version on this machine is `6.18.4+`, and the modified
 kernel can be found at `/data/linux`.
