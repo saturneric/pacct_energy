@@ -123,6 +123,21 @@ static void pacct_energy_estimate_workfn(struct work_struct *work)
 			// 	(__int128)diff * tracked_events[i].koeff);
 		}
 
+		// If we have a timestamp delta, calculate power and update energy accordingly
+		u64 delta = READ_ONCE(e->timestamp_delta);
+		if (delta > 0) {
+			u64 acc_64 = (s64)(acc >> 32) * 1000L; // milliwatt
+			u64 delta_us = delta / 1000L;
+
+			u64 p_old = atomic64_read(&e->power);
+			s64 power = div64_s64(acc_64, delta_us ?: 1);
+			u64 p_new = p_old - (p_old >> 3) + (power >> 3);
+			atomic64_set(&e->power, p_new);
+
+			// pr_info("PID %d: p_new=%llu mW, power=%lld, p_old=%llu\n",
+			// 	e->pid, p_new, power, p_old);
+		}
+
 		atomic64_add((s64)(acc >> 32), &e->energy);
 		WRITE_ONCE(e->energy_updated, true);
 

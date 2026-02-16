@@ -79,9 +79,13 @@ struct traced_task {
 	u64 counts[PACCT_TRACED_EVENT_COUNT];
 	// estimated energy consumption based on the diff counts and coefficients
 	u64 diff_counts[PACCT_TRACED_EVENT_COUNT];
+	u64 last_timestamp;
+	u64 timestamp_delta;
 
 	// estimated energy consumption
 	atomic64_t energy;
+	// estimated power consumption (energy delta over time delta)
+	atomic64_t power;
 	// Flag to indicate if energy has been updated for this task
 	bool energy_updated;
 };

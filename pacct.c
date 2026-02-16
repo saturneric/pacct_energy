@@ -3,6 +3,7 @@
 #include "pacct.h"
 
 #include <linux/perf_event.h>
+#include <linux/timekeeping.h>
 
 struct traced_task *new_traced_task(pid_t pid)
 {
@@ -21,6 +22,7 @@ struct traced_task *new_traced_task(pid_t pid)
 	entry->ready = false;
 	entry->retiring = false;
 	entry->needs_setup = true;
+	entry->last_timestamp = ktime_get_mono_fast_ns();
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 		entry->event[i] = NULL;
 		entry->counts[i] = 0;
