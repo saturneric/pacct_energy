@@ -24,6 +24,9 @@ extern u64 last_pkg_raw, last_ns;
 
 static atomic_t estimator_enabled = ATOMIC_INIT(0);
 
+static bool enable_power_cap = 0;
+module_param(enable_power_cap, bool, 0644);
+
 static bool pick_one_not_ready_candidate(struct traced_task **out)
 {
 	struct traced_task *e;
@@ -351,7 +354,8 @@ static void pacct_gather_total_power_workfn(struct work_struct *work)
 		pkg_power);
 
 	// simple power capping control based on the sampled package power
-	pacct_powercap_control_step(pkg_power);
+	if (enable_power_cap)
+		pacct_powercap_control_step(pkg_power);
 
 	if (atomic_read(&estimator_enabled))
 		schedule_delayed_work(
