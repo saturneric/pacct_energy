@@ -26,10 +26,14 @@ struct traced_task *new_traced_task(pid_t pid)
 	entry->retiring = false;
 	entry->needs_setup = true;
 	atomic64_set(&entry->energy, 0);
-	atomic64_set(&entry->power, 0);
+	atomic64_set(&entry->power_a, 0);
+	atomic64_set(&entry->power_i, 0);
+	atomic64_set(&entry->power_w, 0);
 	entry->last_exec_runtime = 0;
-	atomic64_set(&entry->delta_timestamp_acc, 0);
+	atomic64_set(&entry->delta_exec_runtime_acc, 0);
 	entry->total_exec_runtime_acc = 0;
+	entry->comm[0] = '\0';
+	atomic_set(&entry->record_count, 0);
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 		entry->event[i] = NULL;
 		entry->counts[i] = 0;
@@ -123,7 +127,8 @@ err:
 	return ret;
 }
 
-struct traced_task *get_or_create_traced_task(pid_t pid, bool create)
+struct traced_task *get_or_create_traced_task(pid_t pid, const char *comm,
+					      bool create)
 {
 	struct traced_task *entry;
 
@@ -146,6 +151,11 @@ struct traced_task *get_or_create_traced_task(pid_t pid, bool create)
 	if (!entry) {
 		pr_err("Failed to create traced task for PID %d\n", pid);
 		goto err;
+	}
+
+	if (comm) {
+		strncpy(entry->comm, comm, TASK_COMM_LEN - 1);
+		entry->comm[TASK_COMM_LEN - 1] = '\0';
 	}
 
 	list_add(&entry->list, &traced_tasks);

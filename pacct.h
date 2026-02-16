@@ -79,21 +79,38 @@ struct traced_task {
 	u64 counts[PACCT_TRACED_EVENT_COUNT];
 	// estimated energy consumption based on the diff counts and coefficients
 	atomic64_t diff_counts[PACCT_TRACED_EVENT_COUNT];
+
+	// Execution runtime tracking for power estimation
 	u64 last_exec_runtime;
-	// Accumulated time delta in nanoseconds for this task, used for power estimation
-	atomic64_t delta_timestamp_acc;
+	atomic64_t delta_exec_runtime_acc;
 	u64 total_exec_runtime_acc;
+
+	// Wall clock timestamp of the last context switch for this task, also used for power estimation
+	atomic64_t last_timestamp_ns;
+	atomic64_t delta_timestamp_acc;
 
 	// estimated energy consumption
 	atomic64_t energy;
-	// estimated power consumption (energy delta over time delta)
-	atomic64_t power;
+	// estimated avg power consumption (based on execution runtime)
+	atomic64_t power_a;
+	// estimated instant power consumption (based on execution runtime)
+	atomic64_t power_i;
+	// estimated power consumption based on wall clock time - this can help us
+	// capture power of sleeping tasks which might not have much execution runtime
+	// but can still consume power due to background activity like memory accesses
+	atomic64_t power_w;
+
+	// Number of times this task has been recorded in the energy estimation work.
+	atomic_t record_count;
+
+	char comm[TASK_COMM_LEN];
 };
 
 struct traced_task *new_traced_task(pid_t pid);
 void release_traced_task(struct kref *kref);
 int setup_traced_task_counters(struct traced_task *entry);
-struct traced_task *get_or_create_traced_task(pid_t pid, bool create);
+struct traced_task *get_or_create_traced_task(pid_t pid, const char *comm,
+					      bool create);
 
 void queue_pacct_setup_work(void);
 void queue_pacct_retire_work(void);

@@ -12,7 +12,7 @@ sync
 sudo modprobe ./pacct_energy.ko
 
 # Run a CPU stress test to generate some context switches and events
-sudo turbostat --Summary --show Avg_MHz,Busy%,PkgWatt --interval 1 --quiet -- taskset -c 2-9 stress-ng --cpu 8 --timeout 3s
+sudo turbostat --Summary --show Avg_MHz,Busy%,PkgWatt --interval 1 --quiet -- taskset -c 0-11 stress-ng --cpu 80 --timeout 10s
 
 # Remove the kernel module
 sudo rmmod pacct_energy

@@ -26,7 +26,7 @@ struct list_head retiring_traced_tasks;
 spinlock_t traced_tasks_lock;
 
 // Global variable to hold the total estimated power consumption across all traced tasks
-u64 total_power;
+u64 total_power; // average power in mW (based on wall clock time)
 
 // Perf event for reading package-level energy consumption
 static int rapl_pmu_type = 32;
@@ -39,7 +39,7 @@ u64 last_pkg_raw, last_ns;
 
 static struct traced_task *get_traced_task(pid_t pid)
 {
-	return get_or_create_traced_task(pid, false);
+	return get_or_create_traced_task(pid, NULL, false);
 }
 
 static __inline__ u64 u64_delta_sat(u64 now, u64 prev)
@@ -57,7 +57,55 @@ static __inline__ void init_traced_task(struct traced_task *e, u64 exec_runtime)
 		if (ev && !IS_ERR(ev))
 			WRITE_ONCE(e->counts[i], read_event_count(ev));
 	}
+
+	// Also set the last timestamp to now to avoid having a large delta at the first estimation
+	u64 now = ktime_get_ns();
+	atomic64_set(&e->last_timestamp_ns, now);
 	return;
+}
+
+static void record_task_event_counts(struct traced_task *e,
+				     struct task_struct *ts)
+{
+	atomic_inc(&e->record_count);
+
+	// Update the timestamp and calculate the delta since the last switch
+	u64 exec_runtime = READ_ONCE(ts->se.sum_exec_runtime);
+	u64 last_exec_runtime = READ_ONCE(e->last_exec_runtime);
+	if (last_exec_runtime == 0) {
+		// This can happen if the task is scheduled before we get a chance to initialize it
+		init_traced_task(e, exec_runtime);
+		return;
+	}
+
+	u64 delta = u64_delta_sat(exec_runtime, last_exec_runtime);
+	WRITE_ONCE(e->last_exec_runtime, exec_runtime);
+	atomic64_add(delta, &e->delta_exec_runtime_acc);
+
+	u64 now = ktime_get_ns();
+	u64 last_timestamp = atomic64_read(&e->last_timestamp_ns);
+	if (unlikely(last_timestamp == 0)) {
+		// This can happen if the task is scheduled before we get a chance to initialize it
+		init_traced_task(e, exec_runtime);
+		return;
+	}
+
+	delta = u64_delta_sat(now, last_timestamp);
+	atomic64_set(&e->last_timestamp_ns, now);
+	atomic64_add(delta, &e->delta_timestamp_acc);
+
+	// For each event, read the current count, calculate the diff since last time,
+	// and accumulate the diff
+	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
+		struct perf_event *ev = READ_ONCE(e->event[i]);
+		if (ev && !IS_ERR(ev)) {
+			u64 val = read_event_count(ev); // new value
+			u64 diff = u64_delta_sat(val, READ_ONCE(e->counts[i]));
+
+			atomic64_add(diff, &e->diff_counts[i]);
+			WRITE_ONCE(e->counts[i], val);
+		}
+	}
 }
 
 static void pacct_sched_switch(void *ignore, bool preempt,
@@ -73,31 +121,7 @@ static void pacct_sched_switch(void *ignore, bool preempt,
 		goto out;
 	}
 
-	// Update the timestamp and calculate the delta since the last switch
-	u64 exec_runtime = READ_ONCE(prev->se.sum_exec_runtime);
-	u64 last_exec_runtime = READ_ONCE(e->last_exec_runtime);
-	if (last_exec_runtime == 0) {
-		// This can happen if the task is scheduled before we get a chance to initialize it
-		init_traced_task(e, exec_runtime);
-		goto out;
-	}
-
-	u64 delta = u64_delta_sat(exec_runtime, last_exec_runtime);
-	WRITE_ONCE(e->last_exec_runtime, exec_runtime);
-	atomic64_add(delta, &e->delta_timestamp_acc);
-
-	// For each event, read the current count, calculate the diff since last time,
-	// and accumulate the diff
-	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
-		struct perf_event *ev = READ_ONCE(e->event[i]);
-		if (ev && !IS_ERR(ev)) {
-			u64 val = read_event_count(ev); // new value
-			u64 diff = u64_delta_sat(val, READ_ONCE(e->counts[i]));
-
-			atomic64_add(diff, &e->diff_counts[i]);
-			WRITE_ONCE(e->counts[i], val);
-		}
-	}
+	record_task_event_counts(e, prev);
 
 out:
 	kref_put(&e->ref_count, release_traced_task);
@@ -110,15 +134,16 @@ static void pacct_process_fork(void *ignore, struct task_struct *parent,
 	if (child->flags & PF_KTHREAD)
 		return;
 
-	struct traced_task *e = get_or_create_traced_task(child->pid, true);
+	struct traced_task *e =
+		get_or_create_traced_task(child->pid, child->comm, true);
 	if (!e) {
 		pr_err("Failed to get or create traced task for PID %d\n",
 		       child->pid);
 		return;
 	}
 
-	pr_info("Start to trace new process: PID %d, COMM %s\n", child->pid,
-		child->comm);
+	// pr_info("Start to trace new process: PID %d, COMM %s\n", child->pid,
+	// 	child->comm);
 
 	// schedule setup work for the new task to initialize its perf events
 	queue_pacct_setup_work();
@@ -132,6 +157,9 @@ static void pacct_process_exit(void *ignore, struct task_struct *p)
 	if (!e)
 		return;
 
+	// Record final event counts for this exiting task before we clean it up.
+	record_task_event_counts(e, p);
+
 	// Mark this task as retiring so that the sample_workfn can skip it if it hasn't run yet
 	WRITE_ONCE(e->retiring, true);
 
@@ -143,7 +171,7 @@ static void pacct_process_exit(void *ignore, struct task_struct *p)
 	// print debug info about the exiting task
 	pr_info("Process exiting: PID %d, COMM \"%s\", energy estimate %llu (uJ), power estimate %llu (mW), exec_runtime=%llu\n",
 		e->pid, p->comm, atomic64_read(&e->energy),
-		atomic64_read(&e->power), p->se.sum_exec_runtime);
+		atomic64_read(&e->power_a), p->se.sum_exec_runtime);
 
 	// If energy is not zero, print the final event counts and diffs for this task
 	// This can help us understand the event activity of the task.
@@ -336,6 +364,7 @@ static void __exit pacct_energy_exit(void)
 	// Stop the energy estimator work by first
 	pacct_stop_energy_estimator();
 
+	// Wait for any pending work to finish
 	rapl_mod_exit();
 
 	if (tp_sched_switch)
