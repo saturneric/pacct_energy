@@ -7,6 +7,7 @@
 #include <linux/kref.h>
 #include <linux/hashtable.h>
 #include <linux/sched/signal.h>
+#include <linux/perf_event.h>
 
 #include "pacct.h"
 
@@ -18,6 +19,8 @@ extern struct list_head traced_tasks;
 extern struct list_head retiring_traced_tasks;
 extern spinlock_t traced_tasks_lock;
 extern u64 total_power;
+extern struct perf_event *evt_pkg, *evt_cores;
+extern u64 last_pkg_raw, last_ns;
 
 static atomic_t estimator_enabled = ATOMIC_INIT(0);
 
@@ -205,6 +208,30 @@ void queue_paact_scan_tasks(void)
 	schedule_delayed_work(&paact_scan_tasks_work, msecs_to_jiffies(100));
 }
 
+static u64 sample_pkg_power(void)
+{
+	u64 raw = read_event_count(evt_pkg);
+	u64 now = ktime_get_ns();
+
+	if (last_pkg_raw == 0) {
+		last_pkg_raw = raw;
+		last_ns = now;
+		return 0;
+	}
+
+	u64 d_raw = raw - last_pkg_raw;
+	u64 dt_ns = now - last_ns;
+
+	last_pkg_raw = raw;
+	last_ns = now;
+
+	if (unlikely(dt_ns == 0))
+		return 0;
+
+	u64 numerator = mul_u64_u64_div_u64(d_raw, 1000000000000ULL, dt_ns);
+	return numerator >> 32;
+}
+
 static void pacct_gather_total_power_workfn(struct work_struct *work)
 {
 	struct delayed_work *dwork =
@@ -239,7 +266,9 @@ static void pacct_gather_total_power_workfn(struct work_struct *work)
 	}
 	spin_unlock(&traced_tasks_lock);
 
-	// pr_info("Total estimated power: %llu mW\n", total_power);
+	u64 pkg_power = sample_pkg_power();
+	pr_info("Total estimated power: %llu mW, pkg power: %llu mW\n",
+		total_power, pkg_power);
 
 	if (atomic_read(&estimator_enabled))
 		schedule_delayed_work(

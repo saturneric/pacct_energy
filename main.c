@@ -28,6 +28,15 @@ spinlock_t traced_tasks_lock;
 // Global variable to hold the total estimated power consumption across all traced tasks
 u64 total_power;
 
+// Perf event for reading package-level energy consumption
+static int rapl_pmu_type = 32;
+module_param(rapl_pmu_type, int, 0444);
+struct perf_event *evt_pkg, *evt_cores;
+u64 last_pkg_raw, last_ns;
+
+#define RAPL_EVT_CORES 0x1
+#define RAPL_EVT_PKG 0x2
+
 static struct traced_task *get_traced_task(pid_t pid)
 {
 	return get_or_create_traced_task(pid, false);
@@ -169,6 +178,73 @@ static void tp_lookup_cb(struct tracepoint *tp, void *priv)
 	}
 }
 
+static struct perf_event *open_rapl_event(u64 event_code)
+{
+	struct perf_event_attr attr = {
+		.type = rapl_pmu_type,
+		.config = event_code,
+	};
+
+	attr.disabled = 1;
+	attr.size = sizeof(attr);
+
+	int cpu = cpumask_first(cpu_online_mask);
+	if (cpu >= nr_cpu_ids)
+		return ERR_PTR(-ENODEV);
+
+	struct perf_event *ev =
+		perf_event_create_kernel_counter(&attr, cpu, NULL, NULL, NULL);
+	if (IS_ERR(ev)) {
+		pr_err("perf_event_create_kernel_counter failed for event code 0x%02llx: %ld\n",
+		       event_code, PTR_ERR(ev));
+		return ev;
+	}
+
+	perf_event_enable(ev);
+	return ev;
+}
+
+static int rapl_mod_init(void)
+{
+	evt_pkg = open_rapl_event(RAPL_EVT_PKG);
+	evt_cores = open_rapl_event(RAPL_EVT_CORES);
+
+	if (IS_ERR(evt_pkg) || IS_ERR(evt_cores)) {
+		pr_err("open rapl events failed: pkg=%ld cores=%ld\n",
+		       IS_ERR(evt_pkg) ? PTR_ERR(evt_pkg) : 0L,
+		       IS_ERR(evt_cores) ? PTR_ERR(evt_cores) : 0L);
+
+		if (!IS_ERR(evt_pkg))
+			perf_event_release_kernel(evt_pkg);
+		if (!IS_ERR(evt_cores))
+			perf_event_release_kernel(evt_cores);
+		return -EINVAL;
+	}
+
+	pr_info("RAPL events ready (type=%d): pkg/cores\n", rapl_pmu_type);
+	return 0;
+}
+
+static void rapl_mod_exit(void)
+{
+	if (evt_pkg && !IS_ERR(evt_pkg))
+		perf_event_release_kernel(evt_pkg);
+	if (evt_cores && !IS_ERR(evt_cores))
+		perf_event_release_kernel(evt_cores);
+}
+
+static void clean_traced_task(void)
+{
+	// Move all currently traced tasks to the retiring list for cleanup
+	struct traced_task *entry, *tmp;
+	spin_lock(&traced_tasks_lock);
+	list_for_each_entry_safe(entry, tmp, &traced_tasks, list) {
+		list_del_init(&entry->list);
+		list_add_tail(&entry->retire_node, &retiring_traced_tasks);
+	}
+	spin_unlock(&traced_tasks_lock);
+}
+
 static int __init pacct_energy_init(void)
 {
 	int ret;
@@ -223,6 +299,12 @@ static int __init pacct_energy_init(void)
 		goto err_tp_sched_fork;
 	}
 
+	ret = rapl_mod_init();
+	if (ret) {
+		pr_err("Failed to initialize RAPL events: %d\n", ret);
+		goto err_tp_sched_exit;
+	}
+
 	// Start the energy estimator work
 	pacct_start_energy_estimator();
 
@@ -231,12 +313,20 @@ static int __init pacct_energy_init(void)
 
 	return 0;
 
+err_tp_sched_exit:
+	if (tp_sched_exit)
+		tracepoint_probe_unregister(tp_sched_exit,
+					    (void *)pacct_process_exit, NULL);
 err_tp_sched_fork:
-	tracepoint_probe_unregister(tp_sched_fork, (void *)pacct_process_fork,
-				    NULL);
+	if (tp_sched_fork)
+		tracepoint_probe_unregister(tp_sched_fork,
+					    (void *)pacct_process_fork, NULL);
 err_tp_sched_switch:
-	tracepoint_probe_unregister(tp_sched_switch, (void *)pacct_sched_switch,
-				    NULL);
+	if (tp_sched_switch)
+		tracepoint_probe_unregister(tp_sched_switch,
+					    (void *)pacct_sched_switch, NULL);
+	// Clean up any traced tasks that might have been created before the failure
+	clean_traced_task();
 err:
 	return ret;
 }
@@ -245,6 +335,8 @@ static void __exit pacct_energy_exit(void)
 {
 	// Stop the energy estimator work by first
 	pacct_stop_energy_estimator();
+
+	rapl_mod_exit();
 
 	if (tp_sched_switch)
 		tracepoint_probe_unregister(tp_sched_switch,
@@ -258,17 +350,8 @@ static void __exit pacct_energy_exit(void)
 		tracepoint_probe_unregister(tp_sched_exit,
 					    (void *)pacct_process_exit, NULL);
 
-	// Move all currently traced tasks to the retiring list for cleanup
-	struct traced_task *entry, *tmp;
-	spin_lock(&traced_tasks_lock);
-	list_for_each_entry_safe(entry, tmp, &traced_tasks, list) {
-		list_del_init(&entry->list);
-		list_add_tail(&entry->retire_node, &retiring_traced_tasks);
-	}
-	spin_unlock(&traced_tasks_lock);
-
-	// Process retiring tasks to clean up their perf events
-	queue_pacct_retire_work();
+	// Clean up all traced tasks
+	clean_traced_task();
 
 	pr_info("pacct_energy removed\n");
 }
