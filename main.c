@@ -93,6 +93,13 @@ static void pacct_sched_switch(void *ignore, bool preempt,
 		if (ev && !IS_ERR(ev)) {
 			u64 val = read_event_count(ev);
 			u64 diff = u64_delta_sat(val, READ_ONCE(e->counts[i]));
+
+			// if energy hasn't been updated for this task yet,
+			// we should accumulate the diff counts for energy estimation
+			if (READ_ONCE(e->energy_updated)) {
+				u64 old_diff = READ_ONCE(e->diff_counts[i]);
+				WRITE_ONCE(e->diff_counts[i], old_diff + diff);
+			} else {
 			WRITE_ONCE(e->diff_counts[i], diff);
 			WRITE_ONCE(e->counts[i], val);
 		}
