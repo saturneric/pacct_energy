@@ -100,10 +100,16 @@ static void pacct_sched_switch(void *ignore, bool preempt,
 				u64 old_diff = READ_ONCE(e->diff_counts[i]);
 				WRITE_ONCE(e->diff_counts[i], old_diff + diff);
 			} else {
-			WRITE_ONCE(e->diff_counts[i], diff);
+				WRITE_ONCE(e->diff_counts[i], diff);
+			}
+
 			WRITE_ONCE(e->counts[i], val);
 		}
 	}
+
+	// // read ipcc from the task struct
+	// struct task_struct *t = get_task_by_pid(find_get_pid(prev->pid));
+	// put_task_struct(t);
 
 	WRITE_ONCE(e->energy_updated, false);
 
