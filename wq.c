@@ -6,15 +6,18 @@
 #include <linux/list.h>
 #include <linux/kref.h>
 #include <linux/hashtable.h>
+#include <linux/sched/signal.h>
 
 #include "pacct.h"
 
 #define PACCT_SETUP_BUDGET 32
 #define ENERGY_ESTIMATE_PERIOD_MS 1
+#define TOTAL_POWER_GATHER_PERIOD_MS 150
 
 extern struct list_head traced_tasks;
 extern struct list_head retiring_traced_tasks;
 extern spinlock_t traced_tasks_lock;
+extern u64 total_power;
 
 static atomic_t estimator_enabled = ATOMIC_INIT(0);
 
@@ -159,16 +162,90 @@ static void pacct_energy_estimate_workfn(struct work_struct *work)
 static DECLARE_DELAYED_WORK(pacct_energy_estimate_work,
 			    pacct_energy_estimate_workfn);
 
+static void paact_scan_tasks_workfn(struct work_struct *work)
+{
+	struct task_struct *task;
+
+	for_each_process(task) {
+		// Don't trace kernel threads
+		if (task->flags & PF_KTHREAD)
+			continue;
+
+		// For each existing task, create a traced_task entry for it and mark it as needing setup
+		struct traced_task *e =
+			get_or_create_traced_task(task->pid, true);
+		if (!e) {
+			pr_err("Failed to get or create traced task for PID %d\n",
+			       task->pid);
+			continue;
+		}
+
+		pr_info("Initially tracing existing process: PID %d, COMM %s\n",
+			task->pid, task->comm);
+
+		kref_put(&e->ref_count, release_traced_task);
+	}
+}
+
+static DECLARE_DELAYED_WORK(paact_scan_tasks_work, paact_scan_tasks_workfn);
+
+void queue_paact_scan_tasks(void)
+{
+	schedule_delayed_work(&paact_scan_tasks_work, msecs_to_jiffies(100));
+}
+
+static void pacct_gather_total_power_workfn(struct work_struct *work)
+{
+	struct delayed_work *dwork =
+		container_of(work, struct delayed_work, work);
+	struct traced_task *e;
+	struct traced_task *n;
+
+	WRITE_ONCE(total_power, 0);
+
+	spin_lock(&traced_tasks_lock);
+	list_for_each_entry_safe(e, n, &traced_tasks, list) {
+		kref_get(&e->ref_count);
+
+		if (!READ_ONCE(e->ready)) {
+			kref_put(&e->ref_count, release_traced_task);
+			continue;
+		}
+
+		spin_unlock(&traced_tasks_lock);
+
+		u64 power = atomic64_read(&e->power);
+		total_power += power;
+
+		kref_put(&e->ref_count, release_traced_task);
+		spin_lock(&traced_tasks_lock);
+	}
+	spin_unlock(&traced_tasks_lock);
+
+	pr_info("Total estimated power: %llu mW\n", total_power);
+
+	if (atomic_read(&estimator_enabled))
+		schedule_delayed_work(
+			dwork, msecs_to_jiffies(ENERGY_ESTIMATE_PERIOD_MS));
+}
+
+static DECLARE_DELAYED_WORK(paact_gather_total_power_work,
+			    pacct_gather_total_power_workfn);
+
 void pacct_start_energy_estimator(void)
 {
 	if (atomic_xchg(&estimator_enabled, 1))
 		return;
+
 	schedule_delayed_work(&pacct_energy_estimate_work,
 			      msecs_to_jiffies(ENERGY_ESTIMATE_PERIOD_MS));
+	schedule_delayed_work(&paact_gather_total_power_work,
+			      msecs_to_jiffies(TOTAL_POWER_GATHER_PERIOD_MS));
 }
 
 void pacct_stop_energy_estimator(void)
 {
 	atomic_set(&estimator_enabled, 0);
 	cancel_delayed_work_sync(&pacct_energy_estimate_work);
+	cancel_delayed_work_sync(&paact_gather_total_power_work);
 }

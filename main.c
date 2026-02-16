@@ -25,40 +25,8 @@ struct list_head retiring_traced_tasks;
 // Lock to protect access to the traced_tasks list
 spinlock_t traced_tasks_lock;
 
-static struct traced_task *get_or_create_traced_task(pid_t pid, bool create)
-{
-	struct traced_task *entry;
-
-	spin_lock(&traced_tasks_lock);
-	list_for_each_entry(entry, &traced_tasks, list) {
-		if (entry->pid == pid) {
-			// Found an existing entry for this PID, increment refcount and return it
-			goto out;
-		}
-	}
-
-	if (!create) {
-		// No existing entry found and creation not allowed, return NULL
-		entry = NULL;
-		goto err;
-	}
-
-	// No existing entry found, create a new one
-	entry = new_traced_task(pid);
-	if (!entry) {
-		pr_err("Failed to create traced task for PID %d\n", pid);
-		goto err;
-	}
-
-	list_add(&entry->list, &traced_tasks);
-
-out:
-	// Increment refcount for the new entry
-	kref_get(&entry->ref_count);
-err:
-	spin_unlock(&traced_tasks_lock);
-	return entry;
-}
+// Global variable to hold the total estimated power consumption across all traced tasks
+u64 total_power;
 
 static struct traced_task *get_traced_task(pid_t pid)
 {
@@ -247,6 +215,9 @@ static int __init pacct_energy_init(void)
 
 	// Start the energy estimator work
 	pacct_start_energy_estimator();
+
+	// Schedule a delayed work to scan existing tasks and create traced_task entries for them
+	queue_paact_scan_tasks();
 
 	return 0;
 

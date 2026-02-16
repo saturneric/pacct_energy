@@ -5,6 +5,9 @@
 #include <linux/perf_event.h>
 #include <linux/timekeeping.h>
 
+extern spinlock_t traced_tasks_lock;
+extern struct list_head traced_tasks;
+
 struct traced_task *new_traced_task(pid_t pid)
 {
 	struct traced_task *entry;
@@ -22,6 +25,8 @@ struct traced_task *new_traced_task(pid_t pid)
 	entry->ready = false;
 	entry->retiring = false;
 	entry->needs_setup = true;
+	atomic64_set(&entry->energy, 0);
+	atomic64_set(&entry->power, 0);
 	entry->last_timestamp = ktime_get_mono_fast_ns();
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 		entry->event[i] = NULL;
@@ -113,4 +118,39 @@ int setup_traced_task_counters(struct traced_task *entry)
 err:
 	kref_put(&entry->ref_count, release_traced_task);
 	return ret;
+}
+
+struct traced_task *get_or_create_traced_task(pid_t pid, bool create)
+{
+	struct traced_task *entry;
+
+	spin_lock(&traced_tasks_lock);
+	list_for_each_entry(entry, &traced_tasks, list) {
+		if (entry->pid == pid) {
+			// Found an existing entry for this PID, increment refcount and return it
+			goto out;
+		}
+	}
+
+	if (!create) {
+		// No existing entry found and creation not allowed, return NULL
+		entry = NULL;
+		goto err;
+	}
+
+	// No existing entry found, create a new one
+	entry = new_traced_task(pid);
+	if (!entry) {
+		pr_err("Failed to create traced task for PID %d\n", pid);
+		goto err;
+	}
+
+	list_add(&entry->list, &traced_tasks);
+
+out:
+	// Increment refcount for the new entry
+	kref_get(&entry->ref_count);
+err:
+	spin_unlock(&traced_tasks_lock);
+	return entry;
 }

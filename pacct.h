@@ -93,9 +93,11 @@ struct traced_task {
 struct traced_task *new_traced_task(pid_t pid);
 void release_traced_task(struct kref *kref);
 int setup_traced_task_counters(struct traced_task *entry);
+struct traced_task *get_or_create_traced_task(pid_t pid, bool create);
 
 void queue_pacct_setup_work(void);
 void queue_pacct_retire_work(void);
+void queue_paact_scan_tasks(void);
 void pacct_start_energy_estimator(void);
 void pacct_stop_energy_estimator(void);
 
