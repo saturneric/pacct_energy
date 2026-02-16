@@ -120,3 +120,7 @@ void pacct_stop_energy_estimator(void);
 
 struct task_struct *get_task_by_pid(pid_t pid);
 u64 read_event_count(struct perf_event *ev);
+
+int powercap_init_caps(void);
+void powercap_cleanup_caps(void);
+void pacct_powercap_control_step(u64 pkg_power_mW);

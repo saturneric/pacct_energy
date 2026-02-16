@@ -168,22 +168,22 @@ static void pacct_process_exit(void *ignore, struct task_struct *p)
 	list_del_init(&e->list);
 	spin_unlock(&traced_tasks_lock);
 
-	// print debug info about the exiting task
-	pr_info("Process exiting: PID %d, COMM \"%s\", energy estimate %llu (uJ), power estimate %llu (mW), exec_runtime=%llu\n",
-		e->pid, p->comm, atomic64_read(&e->energy),
-		atomic64_read(&e->power_a), p->se.sum_exec_runtime);
+	// // print debug info about the exiting task
+	// pr_info("Process exiting: PID %d, COMM \"%s\", energy estimate %llu (uJ), power estimate %llu (mW), exec_runtime=%llu\n",
+	// 	e->pid, p->comm, atomic64_read(&e->energy),
+	// 	atomic64_read(&e->power_a), p->se.sum_exec_runtime);
 
-	// If energy is not zero, print the final event counts and diffs for this task
-	// This can help us understand the event activity of the task.
-	if (atomic64_read(&e->energy) != 0) {
-		pr_info("Event counts for exiting PID %d:\n", e->pid);
-		// print each event's final count and diff for this exiting task
-		for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
-			pr_info("[%d]: count=%llu, diff=%llu\n", i,
-				e->counts[i],
-				atomic64_read(&e->diff_counts[i]));
-		}
-	}
+	// // If energy is not zero, print the final event counts and diffs for this task
+	// // This can help us understand the event activity of the task.
+	// if (atomic64_read(&e->energy) != 0) {
+	// 	pr_info("Event counts for exiting PID %d:\n", e->pid);
+	// 	// print each event's final count and diff for this exiting task
+	// 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
+	// 		pr_info("[%d]: count=%llu, diff=%llu\n", i,
+	// 			e->counts[i],
+	// 			atomic64_read(&e->diff_counts[i]));
+	// 	}
+	// }
 
 	// add to retiring_traced_tasks for cleanup
 	list_add_tail(&e->retire_node, &retiring_traced_tasks);
@@ -284,6 +284,13 @@ static int __init pacct_energy_init(void)
 	INIT_LIST_HEAD(&traced_tasks);
 	INIT_LIST_HEAD(&retiring_traced_tasks);
 
+	// Initialize the powercap interfaces and get the initial CPU frequency caps
+	ret = powercap_init_caps();
+	if (ret) {
+		pr_err("powercap init failed: %d\n", ret);
+		goto err;
+	}
+
 	for_each_kernel_tracepoint(tp_lookup_cb, "sched_switch");
 	if (!tp_sched_switch) {
 		pr_err("tracepoint sched_switch not found\n");
@@ -378,6 +385,9 @@ static void __exit pacct_energy_exit(void)
 	if (tp_sched_exit)
 		tracepoint_probe_unregister(tp_sched_exit,
 					    (void *)pacct_process_exit, NULL);
+
+	// Clean up any traced tasks that might still be around
+	powercap_cleanup_caps();
 
 	// Clean up all traced tasks
 	clean_traced_task();

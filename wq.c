@@ -255,8 +255,8 @@ static void paact_scan_tasks_workfn(struct work_struct *work)
 				continue;
 			}
 
-			pr_info("Initially tracing existing process: PID %d, COMM %s\n",
-				ts->pid, ts->comm);
+			// pr_info("Initially tracing existing process: PID %d, COMM %s\n",
+			// 	ts->pid, ts->comm);
 
 			kref_put(&e->ref_count, release_traced_task);
 		}
@@ -349,6 +349,9 @@ static void pacct_gather_total_power_workfn(struct work_struct *work)
 	u64 pkg_power = sample_pkg_power();
 	pr_info("Power: avg power: %llu mW, pkg power: %llu mW\n", total_power,
 		pkg_power);
+
+	// simple power capping control based on the sampled package power
+	pacct_powercap_control_step(pkg_power);
 
 	if (atomic_read(&estimator_enabled))
 		schedule_delayed_work(
