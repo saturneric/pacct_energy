@@ -38,6 +38,19 @@ static __inline__ u64 u64_delta_sat(u64 now, u64 prev)
 	return (now >= prev) ? (now - prev) : 0;
 }
 
+static __inline__ void init_traced_task(struct traced_task *e, u64 exec_runtime)
+{
+	// This can happen at init time because we set last_exec_runtime to 0 initially
+	// and only update it after the first switch.
+	WRITE_ONCE(e->last_exec_runtime, exec_runtime);
+	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
+		struct perf_event *ev = READ_ONCE(e->event[i]);
+		if (ev && !IS_ERR(ev))
+			WRITE_ONCE(e->counts[i], read_event_count(ev));
+	}
+	return;
+}
+
 static void pacct_sched_switch(void *ignore, bool preempt,
 			       struct task_struct *prev,
 			       struct task_struct *next)
@@ -51,35 +64,31 @@ static void pacct_sched_switch(void *ignore, bool preempt,
 		goto out;
 	}
 
-	u64 now = ktime_get_mono_fast_ns();
-	u64 delta = now - READ_ONCE(e->last_timestamp);
-	WRITE_ONCE(e->timestamp_delta, delta);
-	WRITE_ONCE(e->last_timestamp, now);
+	// Update the timestamp and calculate the delta since the last switch
+	u64 exec_runtime = READ_ONCE(prev->se.sum_exec_runtime);
+	u64 last_exec_runtime = READ_ONCE(e->last_exec_runtime);
+	if (last_exec_runtime == 0) {
+		// This can happen if the task is scheduled before we get a chance to initialize it
+		init_traced_task(e, exec_runtime);
+		goto out;
+	}
 
+	u64 delta = u64_delta_sat(exec_runtime, last_exec_runtime);
+	WRITE_ONCE(e->last_exec_runtime, exec_runtime);
+	atomic64_add(delta, &e->delta_timestamp_acc);
+
+	// For each event, read the current count, calculate the diff since last time,
+	// and accumulate the diff
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 		struct perf_event *ev = READ_ONCE(e->event[i]);
 		if (ev && !IS_ERR(ev)) {
-			u64 val = read_event_count(ev);
+			u64 val = read_event_count(ev); // new value
 			u64 diff = u64_delta_sat(val, READ_ONCE(e->counts[i]));
 
-			// if energy hasn't been updated for this task yet,
-			// we should accumulate the diff counts for energy estimation
-			if (READ_ONCE(e->energy_updated)) {
-				u64 old_diff = READ_ONCE(e->diff_counts[i]);
-				WRITE_ONCE(e->diff_counts[i], old_diff + diff);
-			} else {
-				WRITE_ONCE(e->diff_counts[i], diff);
-			}
-
+			atomic64_add(diff, &e->diff_counts[i]);
 			WRITE_ONCE(e->counts[i], val);
 		}
 	}
-
-	// // read ipcc from the task struct
-	// struct task_struct *t = get_task_by_pid(find_get_pid(prev->pid));
-	// put_task_struct(t);
-
-	WRITE_ONCE(e->energy_updated, false);
 
 out:
 	kref_put(&e->ref_count, release_traced_task);
@@ -123,9 +132,9 @@ static void pacct_process_exit(void *ignore, struct task_struct *p)
 	spin_unlock(&traced_tasks_lock);
 
 	// print debug info about the exiting task
-	pr_info("Process exiting: PID %d, COMM \"%s\", energy estimate %llu (uJ), power estimate %llu (mW)\n",
+	pr_info("Process exiting: PID %d, COMM \"%s\", energy estimate %llu (uJ), power estimate %llu (mW), exec_runtime=%llu\n",
 		e->pid, p->comm, atomic64_read(&e->energy),
-		atomic64_read(&e->power));
+		atomic64_read(&e->power), p->se.sum_exec_runtime);
 
 	// If energy is not zero, print the final event counts and diffs for this task
 	// This can help us understand the event activity of the task.
@@ -134,7 +143,8 @@ static void pacct_process_exit(void *ignore, struct task_struct *p)
 		// print each event's final count and diff for this exiting task
 		for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 			pr_info("[%d]: count=%llu, diff=%llu\n", i,
-				e->counts[i], e->diff_counts[i]);
+				e->counts[i],
+				atomic64_read(&e->diff_counts[i]));
 		}
 	}
 

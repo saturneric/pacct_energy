@@ -27,10 +27,13 @@ struct traced_task *new_traced_task(pid_t pid)
 	entry->needs_setup = true;
 	atomic64_set(&entry->energy, 0);
 	atomic64_set(&entry->power, 0);
-	entry->last_timestamp = ktime_get_mono_fast_ns();
+	entry->last_exec_runtime = 0;
+	atomic64_set(&entry->delta_timestamp_acc, 0);
+	entry->total_exec_runtime_acc = 0;
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 		entry->event[i] = NULL;
 		entry->counts[i] = 0;
+		atomic64_set(&entry->diff_counts[i], 0);
 	}
 
 	return entry;

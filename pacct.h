@@ -78,16 +78,16 @@ struct traced_task {
 	// pref counts for each event, updated on context switches
 	u64 counts[PACCT_TRACED_EVENT_COUNT];
 	// estimated energy consumption based on the diff counts and coefficients
-	u64 diff_counts[PACCT_TRACED_EVENT_COUNT];
-	u64 last_timestamp;
-	u64 timestamp_delta;
+	atomic64_t diff_counts[PACCT_TRACED_EVENT_COUNT];
+	u64 last_exec_runtime;
+	// Accumulated time delta in nanoseconds for this task, used for power estimation
+	atomic64_t delta_timestamp_acc;
+	u64 total_exec_runtime_acc;
 
 	// estimated energy consumption
 	atomic64_t energy;
 	// estimated power consumption (energy delta over time delta)
 	atomic64_t power;
-	// Flag to indicate if energy has been updated for this task
-	bool energy_updated;
 };
 
 struct traced_task *new_traced_task(pid_t pid);

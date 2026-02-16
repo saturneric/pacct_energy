@@ -95,6 +95,47 @@ void queue_pacct_retire_work(void)
 	queue_work(system_unbound_wq, &pacct_retire_work);
 }
 
+static __inline__ void pacct_estimate_traced_task_energy(struct traced_task *e)
+{
+	u64 diff_count[PACCT_TRACED_EVENT_COUNT];
+	u64 ts_delta_ns;
+
+	// Atomically read and reset the diff_counts and delta_timestamp_acc for this
+	// task. We can get a slightly stale value here, but that's acceptable for
+	// energy estimation, and it can help us avoid contention with the energy
+	// estimation work that might be updating these values at the same time.
+	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
+		diff_count[i] = atomic64_xchg(&e->diff_counts[i], 0);
+	}
+	ts_delta_ns = atomic64_xchg(&e->delta_timestamp_acc, 0);
+	e->total_exec_runtime_acc += ts_delta_ns;
+
+	// Calculate energy estimation based on diff_counts and coefficients
+	__int128 acc = 0;
+	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
+		u64 diff = READ_ONCE(diff_count[i]);
+		if (e->event[i] && !IS_ERR(e->event[i]))
+			acc += (__int128)diff * tracked_events[i].koeff;
+
+		// print debug info about this event
+		// pr_info("PID %d, Event %d: diff=%llu, coeff=%lld, partial_energy=%lld\n",
+		// 	e->pid, i, diff, tracked_events[i].koeff,
+		// 	(__int128)diff * tracked_events[i].koeff);
+	}
+
+	atomic64_add((s64)(acc >> 32), &e->energy); // uJ
+
+	// Calculate power estimation based on energy and time delta
+	u64 energy = atomic64_read(&e->energy);
+	u64 total_exec_runtime_us = e->total_exec_runtime_acc / 1000;
+	// To avoid division by zero, we can use the current timestamp delta as an
+	// approximation of the time delta if total_exec_runtime_acc is still zero
+	u64 power = div64_u64(energy * 1000, total_exec_runtime_us ?
+						     total_exec_runtime_us :
+						     1);
+	atomic64_set(&e->power, power);
+}
+
 static void pacct_energy_estimate_workfn(struct work_struct *work)
 {
 	struct delayed_work *dwork =
@@ -106,45 +147,15 @@ static void pacct_energy_estimate_workfn(struct work_struct *work)
 	list_for_each_entry_safe(e, n, &traced_tasks, list) {
 		kref_get(&e->ref_count);
 
-		if (!READ_ONCE(e->ready) || READ_ONCE(e->energy_updated)) {
+		if (!READ_ONCE(e->ready) || READ_ONCE(e->retiring)) {
 			kref_put(&e->ref_count, release_traced_task);
 			continue;
 		}
 
 		spin_unlock(&traced_tasks_lock);
 
-		// Calculate energy estimation based on diff_counts and coefficients
-		__int128 acc = 0;
-		for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
-			u64 diff = READ_ONCE(e->diff_counts[i]);
-			if (e->event[i] && !IS_ERR(e->event[i]))
-				acc += (__int128)diff * tracked_events[i].koeff;
+		pacct_estimate_traced_task_energy(e);
 
-			// print debug info about this event
-			// pr_info("PID %d, Event %d: diff=%llu, coeff=%lld, partial_energy=%lld\n",
-			// 	e->pid, i, diff, tracked_events[i].koeff,
-			// 	(__int128)diff * tracked_events[i].koeff);
-		}
-
-		// If we have a timestamp delta, calculate power and update energy accordingly
-		u64 delta = READ_ONCE(e->timestamp_delta);
-		if (delta > 0) {
-			u64 acc_64 = (s64)(acc >> 32) * 1000L; // milliwatt
-			u64 delta_us = delta / 1000L;
-
-			u64 p_old = atomic64_read(&e->power);
-			s64 power = div64_s64(acc_64, delta_us ?: 1);
-			u64 p_new = p_old - (p_old >> 3) + (power >> 3);
-			atomic64_set(&e->power, p_new);
-
-			// pr_info("PID %d: p_new=%llu mW, power=%lld, p_old=%llu\n",
-			// 	e->pid, p_new, power, p_old);
-		}
-
-		atomic64_add((s64)(acc >> 32), &e->energy);
-		WRITE_ONCE(e->energy_updated, true);
-
-		// Release reference
 		kref_put(&e->ref_count, release_traced_task);
 
 		// pr_info("Estimated energy for PID %d: %llu\n", e->pid,
@@ -217,12 +228,18 @@ static void pacct_gather_total_power_workfn(struct work_struct *work)
 		u64 power = atomic64_read(&e->power);
 		total_power += power;
 
+		// print abnormally high power tasks for debugging
+		if (power > 100000) { // 100W threshold for high power task
+			pr_info("[!!!!!]High power task: PID %d, Power %llu mW\n",
+				e->pid, power);
+		}
+
 		kref_put(&e->ref_count, release_traced_task);
 		spin_lock(&traced_tasks_lock);
 	}
 	spin_unlock(&traced_tasks_lock);
 
-	pr_info("Total estimated power: %llu mW\n", total_power);
+	// pr_info("Total estimated power: %llu mW\n", total_power);
 
 	if (atomic_read(&estimator_enabled))
 		schedule_delayed_work(
