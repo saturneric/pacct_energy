@@ -84,15 +84,33 @@ static void pacct_sched_switch(void *ignore, bool preempt,
 		goto out;
 	}
 
+	u64 now = ktime_get_mono_fast_ns();
+	u64 delta = now - READ_ONCE(e->last_timestamp);
+	WRITE_ONCE(e->timestamp_delta, delta);
+	WRITE_ONCE(e->last_timestamp, now);
+
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 		struct perf_event *ev = READ_ONCE(e->event[i]);
 		if (ev && !IS_ERR(ev)) {
 			u64 val = read_event_count(ev);
 			u64 diff = u64_delta_sat(val, READ_ONCE(e->counts[i]));
-			WRITE_ONCE(e->diff_counts[i], diff);
+
+			// if energy hasn't been updated for this task yet,
+			// we should accumulate the diff counts for energy estimation
+			if (READ_ONCE(e->energy_updated)) {
+				u64 old_diff = READ_ONCE(e->diff_counts[i]);
+				WRITE_ONCE(e->diff_counts[i], old_diff + diff);
+			} else {
+				WRITE_ONCE(e->diff_counts[i], diff);
+			}
+
 			WRITE_ONCE(e->counts[i], val);
 		}
 	}
+
+	// // read ipcc from the task struct
+	// struct task_struct *t = get_task_by_pid(find_get_pid(prev->pid));
+	// put_task_struct(t);
 
 	WRITE_ONCE(e->energy_updated, false);
 
@@ -138,8 +156,9 @@ static void pacct_process_exit(void *ignore, struct task_struct *p)
 	spin_unlock(&traced_tasks_lock);
 
 	// print debug info about the exiting task
-	pr_info("Process exiting: PID %d, COMM \"%s\", energy estimate %llu (uJ)\n",
-		e->pid, p->comm, atomic64_read(&e->energy));
+	pr_info("Process exiting: PID %d, COMM \"%s\", energy estimate %llu (uJ), power estimate %llu (mW)\n",
+		e->pid, p->comm, atomic64_read(&e->energy),
+		atomic64_read(&e->power));
 
 	// If energy is not zero, print the final event counts and diffs for this task
 	// This can help us understand the event activity of the task.
