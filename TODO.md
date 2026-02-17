@@ -19,6 +19,7 @@
   values.
 - Userspace tool to read the power and energy values of the processes and show
   in a process tree.
+  - add values to parent in process tree
 - Current energy estimating model doesn't support E-cores, which can lead to
   inaccurate power estimation when the workload is running on E-cores. We can
   consider adding a separate power estimation model for E-cores to improve the
