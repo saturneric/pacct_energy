@@ -7,6 +7,7 @@
 #include <linux/smp.h>
 
 #include "pacct.h"
+#include "proc.h"
 
 MODULE_AUTHOR("pm3");
 MODULE_DESCRIPTION("Process Energy Accounting Module");
@@ -340,6 +341,8 @@ static int __init pacct_energy_init(void)
 		goto err_tp_sched_exit;
 	}
 
+	init_proc(); // Create directory in proc/
+
 	// Start the energy estimator work
 	pacct_start_energy_estimator();
 
@@ -391,6 +394,9 @@ static void __exit pacct_energy_exit(void)
 
 	// Clean up all traced tasks
 	clean_traced_task();
+
+	// Clean up proc entries for all traced tasks
+	remove_proc();
 
 	pr_info("pacct_energy removed\n");
 }

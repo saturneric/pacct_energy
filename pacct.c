@@ -1,6 +1,7 @@
 #define pr_fmt(fmt) "%s:%s():%d: " fmt, KBUILD_MODNAME, __func__, __LINE__
 
 #include "pacct.h"
+#include "proc.h"
 
 #include <linux/perf_event.h>
 #include <linux/timekeeping.h>
@@ -39,7 +40,7 @@ struct traced_task *new_traced_task(pid_t pid)
 		entry->counts[i] = 0;
 		atomic64_set(&entry->diff_counts[i], 0);
 	}
-
+	setUpProcFile(entry);
 	return entry;
 }
 
@@ -55,7 +56,7 @@ void release_traced_task(struct kref *kref)
 			perf_event_release_kernel(entry->event[i]);
 		}
 	}
-
+	freeProcFile(entry);
 	// Free the traced_task structure itself
 	kfree(entry);
 }

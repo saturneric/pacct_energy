@@ -72,7 +72,8 @@ STRIP := ${CROSS_COMPILE}strip
 PWD             := $(shell pwd)
 obj-m           += ${FNAME_C}.o
 
-${FNAME_C}-objs := main.o wq.o pacct.o utils.o powercap.o
+${FNAME_C}-objs := main.o wq.o pacct.o utils.o powercap.o proc.o
+${FNAME_C}-objs := main.o wq.o pacct.o utils.o proc.o
 
 #--- Debug or production mode?
 # Set the MYDEBUG variable accordingly to y/n resp. We keep it off (n) by default.

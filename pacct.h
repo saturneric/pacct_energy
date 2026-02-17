@@ -4,6 +4,7 @@
 #include <linux/kref.h>
 #include <linux/types.h>
 #include <linux/workqueue.h>
+#include <linux/proc_fs.h>
 
 // Define the events we want to track with their event codes and umasks
 static struct {
@@ -64,6 +65,10 @@ static struct {
 
 #define PACCT_TRACED_EVENT_COUNT ARRAY_SIZE(tracked_events)
 
+struct proc_entry {
+	struct proc_dir_entry *process_dir;
+};
+
 struct traced_task {
 	struct list_head list;
 	struct hlist_node hnode;
@@ -104,6 +109,8 @@ struct traced_task {
 	atomic_t record_count;
 
 	char comm[TASK_COMM_LEN];
+
+	struct proc_entry proc_entry; // Associated file under proc
 };
 
 struct traced_task *new_traced_task(pid_t pid);
