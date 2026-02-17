@@ -71,7 +71,6 @@ struct proc_entry {
 
 struct traced_task {
 	struct list_head list;
-	struct hlist_node hnode;
 	struct list_head retire_node; // Node for the retiring_traced_tasks list
 	struct kref ref_count; // Reference count for this traced task entry
 	pid_t pid;
