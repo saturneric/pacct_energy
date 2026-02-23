@@ -123,7 +123,7 @@ static __inline__ void pacct_estimate_traced_task_energy(struct traced_task *e)
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 		u64 diff = READ_ONCE(diff_count[i]);
 		if (e->event[i] && !IS_ERR(e->event[i]))
-			acc += (__int128)diff * tracked_events[i].koeff;
+			acc += ((__int128)diff * tracked_events[i].koeff);
 
 		// print debug info about this event
 		// pr_info("PID %d, Event %d: diff=%llu, coeff=%lld, partial_energy=%lld\n",
@@ -140,10 +140,10 @@ static __inline__ void pacct_estimate_traced_task_energy(struct traced_task *e)
 
 	// Calculate power estimation based on energy and time delta
 	u64 energy = atomic64_read(&e->energy);
-	u64 total_exec_runtime_us = e->total_exec_runtime_acc / 1000;
+	u64 total_exec_runtime_us = e->total_exec_runtime_acc / 1000; // Convert ns to us
 	// To avoid division by zero, we can use the current timestamp delta as an
 	// approximation of the time delta if total_exec_runtime_acc is still zero
-	u64 power = div64_u64(energy * 1000, total_exec_runtime_us ?
+	u64 power = div64_u64(energy * 1000, total_exec_runtime_us ?  // nJ / us = 10^-9J/ 10^-6s= 1mW
 						     total_exec_runtime_us :
 						     1);
 
