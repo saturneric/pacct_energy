@@ -6,60 +6,62 @@
 #include <linux/workqueue.h>
 #include <linux/proc_fs.h>
 
+#define COUNTER_SCALE 100000000
+#define SCALE_COUNTER(counter) ((s64) ((double) COUNTER_SCALE * (counter)))
+
 // Define the events we want to track with their event codes and umasks
 static struct {
 	u8 event_code;
 	u8 umask;
 	s64 koeff; // Coefficient for energy estimation
 } tracked_events[] = {
-	// CPU_CLK_UNHALTED.THREAD_P
+	// CPU_CLK_UNHALTED.THREAD_P Thread cycles when thread is not in halt state
 	{
 		.event_code = 0x3c,
 		.umask = 0x00,
-		.koeff = 63840,
+		.koeff = SCALE_COUNTER(0.0021556045726281907),
 	},
-	// INST_RETIRED.ANY_P
+	// DTLB_STORE_MISSES.WALK_COMPLETED_4K Page walks completed due to a demand data store to a 4K page.
+	{
+		.event_code = 0x13,
+		.umask = 0x02,
+		.koeff = SCALE_COUNTER(-61.560037720824646),
+	},
+	// BR_MISP_RETIRED.ALL_BRANCHES All mispredicted branch instructions retired.
+	{
+		.event_code = 0xc5,
+		.umask = 0x00,
+		.koeff = SCALE_COUNTER(8.674131795501472),
+	},
+	// CPU_CLK_UNHALTED.C0_WAIT Core clocks when the thread is in the C0.1 or C0.2 or running a PAUSE in C0 ACPI state.
+	{
+		.event_code = 0xec,
+		.umask = 0x70,
+		.koeff = SCALE_COUNTER(-56.43560363241782),
+	},
+	// INT_MISC.UOP_DROPPING TMA slots where uops got dropped
+	{
+		.event_code = 0xad,
+		.umask = 0x10,
+		.koeff = SCALE_COUNTER(0.701297506177149),
+	},
+	// INST_RETIRED.ANY_P Number of instructions retired. General Counter - architectural event
 	{
 		.event_code = 0xc0,
 		.umask = 0x00,
-		.koeff = 491702,
+		.koeff = SCALE_COUNTER(0.00033669210675668637),
 	},
-	// OFFCORE_REQUESTS_OUTSTANDING.DEMAND_DATA_RD
-	{
-		.event_code = 0x20,
-		.umask = 0x01,
-		.koeff = -239221,
-	},
-	// BR_INST_RETIRED.ALL_BRANCHES
-	{
-		.event_code = 0xc4,
-		.umask = 0x00,
-		.koeff = 226492,
-	},
-	// MEM_LOAD_L3_MISS_RETIRED.LOCAL_DRAM
-	{
-		.event_code = 0xd3,
-		.umask = 0x01,
-		.koeff = 202299,
-	},
-	// INST_RETIRED.ANY
-	// Number of instructions retired. Fixed Counter - architectural event
-	{
-		.event_code = 0x00,
-		.umask = 0x01,
-		.koeff = -178523, // Why negative?
-	},
-	// EOFFCORE_REQUESTS.DEMAND_DATA_RD
-	{
-		.event_code = 0x21,
-		.umask = 0x01,
-		.koeff = -151731,
-	},
-	// EXE_ACTIVITY.1_PORTS_UTIL
+	// EXE_ACTIVITY.1_PORTS_UTIL Cycles total of 1 uop is executed on all ports and Reservation Station was not empty.
 	{
 		.event_code = 0xa6,
 		.umask = 0x02,
-		.koeff = 138130,
+		.koeff = SCALE_COUNTER(0.00247793753839165),
+	},
+	// MEM_LOAD_RETIRED.L1_HIT Retired load instructions with L1 cache hits as data sources
+	{
+		.event_code = 0xd1,
+		.umask = 0x01,
+		.koeff = SCALE_COUNTER(-0.0010332474623950816),
 	},
 };
 
