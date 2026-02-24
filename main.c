@@ -193,6 +193,7 @@ static void pacct_process_exit(void *ignore, struct task_struct *p)
 	kref_put(&e->ref_count, release_traced_task);
 }
 
+//Looks for the wanted tracepoints and store in static variables
 static void tp_lookup_cb(struct tracepoint *tp, void *priv)
 {
 	const char *name = priv;
@@ -234,7 +235,8 @@ static struct perf_event *open_rapl_event(u64 event_code)
 }
 
 static int rapl_mod_init(void)
-{
+{	
+	//Create perf events that measure the energy used by the cpu via rapl
 	evt_pkg = open_rapl_event(RAPL_EVT_PKG);
 	evt_cores = open_rapl_event(RAPL_EVT_CORES);
 
@@ -274,7 +276,7 @@ static void clean_traced_task(void)
 	spin_unlock(&traced_tasks_lock);
 }
 
-static int __init pacct_energy_init(void)
+static int __init pacct_energy_init(void) //Start of the module
 {
 	int ret;
 
@@ -292,6 +294,7 @@ static int __init pacct_energy_init(void)
 		goto err;
 	}
 
+	//find the needed tracepoints
 	for_each_kernel_tracepoint(tp_lookup_cb, "sched_switch");
 	if (!tp_sched_switch) {
 		pr_err("tracepoint sched_switch not found\n");
@@ -313,7 +316,7 @@ static int __init pacct_energy_init(void)
 		goto err;
 	}
 
-	// Register the probe function for the sched_switch tracepoint
+	// Register the functions to be called on the trace points
 	ret = tracepoint_probe_register(tp_sched_switch,
 					(void *)pacct_sched_switch, NULL);
 	if (ret) {
@@ -335,7 +338,7 @@ static int __init pacct_energy_init(void)
 		goto err_tp_sched_fork;
 	}
 
-	ret = rapl_mod_init();
+	ret = rapl_mod_init(); //Create perf events measuring energy using rapl
 	if (ret) {
 		pr_err("Failed to initialize RAPL events: %d\n", ret);
 		goto err_tp_sched_exit;
@@ -347,7 +350,7 @@ static int __init pacct_energy_init(void)
 	pacct_start_energy_estimator();
 
 	// Schedule a delayed work to scan existing tasks and create traced_task entries for them
-	queue_paact_scan_tasks();
+	queue_pacct_scan_tasks();
 
 	return 0;
 

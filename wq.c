@@ -101,6 +101,7 @@ void queue_pacct_retire_work(void)
 	queue_work(system_unbound_wq, &pacct_retire_work);
 }
 
+// Estimate the energy from the counters via the model and calculate the power for each traced task
 static __inline__ void pacct_estimate_traced_task_energy(struct traced_task *e)
 {
 	u64 diff_count[PACCT_TRACED_EVENT_COUNT];
@@ -133,10 +134,13 @@ static __inline__ void pacct_estimate_traced_task_energy(struct traced_task *e)
 
 	// We might get some negative energy estimation due to noise, but we can just
 	// treat it as zero in that case since negative energy doesn't make sense.
-	if (acc < 0)
+	if (acc < 0) {
+		pr_info("Encountered negative energy estimation.");
 		acc = 0;
+	}
+		
 
-	atomic64_add((s64)(acc >> 32), &e->energy); // uJ
+	atomic64_add((s64)(acc >> 32), &e->energy); // uJ //TODO: Why >> 32 Is this the bug? The diff are already shifted by 32 so its 64 now
 
 	// Calculate power estimation based on energy and time delta
 	u64 energy = atomic64_read(&e->energy);
@@ -232,7 +236,8 @@ static void pacct_energy_estimate_workfn(struct work_struct *work)
 static DECLARE_DELAYED_WORK(pacct_energy_estimate_work,
 			    pacct_energy_estimate_workfn);
 
-static void paact_scan_tasks_workfn(struct work_struct *work)
+// Add all existing processes to our traced_tasks list to be initialized later
+static void pacct_scan_tasks_workfn(struct work_struct *work)
 {
 	struct task_struct *task;
 
@@ -243,7 +248,7 @@ static void paact_scan_tasks_workfn(struct work_struct *work)
 
 		get_task_struct(ts);
 
-		if (ts->flags & PF_KTHREAD) {
+		if (ts->flags & PF_KTHREAD) { 
 			put_task_struct(ts);
 			continue;
 		}
@@ -270,13 +275,14 @@ static void paact_scan_tasks_workfn(struct work_struct *work)
 	queue_pacct_setup_work();
 }
 
-static DECLARE_DELAYED_WORK(paact_scan_tasks_work, paact_scan_tasks_workfn);
+static DECLARE_DELAYED_WORK(pacct_scan_tasks_work, pacct_scan_tasks_workfn);
 
-void queue_paact_scan_tasks(void)
+void queue_pacct_scan_tasks(void)
 {
-	schedule_delayed_work(&paact_scan_tasks_work, msecs_to_jiffies(100));
+	schedule_delayed_work(&pacct_scan_tasks_work, msecs_to_jiffies(100));
 }
 
+//Calculate the power measured via rapl
 static u64 sample_pkg_power(void)
 {
 	u64 raw = read_event_count(evt_pkg);
@@ -349,7 +355,7 @@ static void pacct_gather_total_power_workfn(struct work_struct *work)
 	}
 	spin_unlock(&traced_tasks_lock);
 
-	u64 pkg_power = sample_pkg_power();
+	u64 pkg_power = sample_pkg_power(); //measured using rapl
 	pr_info("Power: avg power: %llu mW, pkg power: %llu mW\n", total_power,
 		pkg_power);
 
@@ -362,17 +368,18 @@ static void pacct_gather_total_power_workfn(struct work_struct *work)
 			dwork, msecs_to_jiffies(TOTAL_POWER_GATHER_PERIOD_MS));
 }
 
-static DECLARE_DELAYED_WORK(paact_gather_total_power_work,
+static DECLARE_DELAYED_WORK(pacct_gather_total_power_work,
 			    pacct_gather_total_power_workfn);
 
 void pacct_start_energy_estimator(void)
 {
-	if (atomic_xchg(&estimator_enabled, 1))
+	if (atomic_xchg(&estimator_enabled, 1)) //Ensure estimator is only activated once
 		return;
 
 	schedule_delayed_work(&pacct_energy_estimate_work,
 			      msecs_to_jiffies(ENERGY_ESTIMATE_PERIOD_MS));
-	schedule_delayed_work(&paact_gather_total_power_work,
+	// Sum power of all processes and compare to rapl printing to log
+	schedule_delayed_work(&pacct_gather_total_power_work,
 			      msecs_to_jiffies(TOTAL_POWER_GATHER_PERIOD_MS));
 }
 
@@ -380,5 +387,5 @@ void pacct_stop_energy_estimator(void)
 {
 	atomic_set(&estimator_enabled, 0);
 	cancel_delayed_work_sync(&pacct_energy_estimate_work);
-	cancel_delayed_work_sync(&paact_gather_total_power_work);
+	cancel_delayed_work_sync(&pacct_gather_total_power_work);
 }

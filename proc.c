@@ -52,6 +52,13 @@ void setUpProcFile(struct traced_task *entry) {
 
 	proc_create_data("energy_uj", 0444, entry->proc_entry.process_dir, &ops,
 			 &entry->energy);
+	for (size_t i = 0; i < PACCT_TRACED_EVENT_COUNT; i++)
+	{
+		char *name = kasprintf(GFP_ATOMIC, "r%u%s", tracked_events[i].umask, tracked_events[i].event_code);
+		//proc_create_data(name, 0444, entry->proc_entry.process_dir, &ops, &entry->counts[i]); //TODO: Implement
+		kfree(name);
+	}
+	
 }
 
 void freeProcFile(struct traced_task *entry) {
