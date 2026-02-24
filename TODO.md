@@ -14,7 +14,7 @@
 
 # TODO
 
-- Support Intel Thread Director (ITD) by modifying kernel.
+- Support Intel Thread Director (ITD) by modifying kernel. 
 - Adjust the power estimation model to reduce the value error from the RAPL
   values.
 - Userspace tool to read the power and energy values of the processes and show
