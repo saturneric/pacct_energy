@@ -321,7 +321,7 @@ static void __exit pacct_energy_exit(void)
 		tracepoint_probe_unregister(tp_sched_exit,
 					    (void *)pacct_process_exit, NULL);
 
-	// Clean up any traced tasks that might still be around
+	// Clean up for powercap policies and interfaces
 	powercap_cleanup_caps();
 
 	// Clean up all traced tasks
