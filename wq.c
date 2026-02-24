@@ -19,7 +19,6 @@ extern struct list_head traced_tasks;
 extern struct list_head retiring_traced_tasks;
 extern spinlock_t traced_tasks_lock;
 extern u64 total_power;
-extern struct perf_event *evt_pkg, *evt_cores;
 extern u64 last_pkg_raw, last_ns;
 
 static atomic_t estimator_enabled = ATOMIC_INIT(0);
@@ -320,6 +319,16 @@ static u64 sample_pkg_power(void)
 	// u64 raw = read_event_count(evt_cores);
 	u64 now = ktime_get_ns();
 
+	if (rapl_eu_shift == 0) {
+		int ret = rapl_read_eu_shift_on_cpu(0);
+		if (ret) {
+			pr_err("Failed to read RAPL energy unit shift: %d\n",
+			       ret);
+			return 0;
+		}
+		pr_info("RAPL energy unit shift: %u\n", rapl_eu_shift);
+	}
+
 	u64 raw = 0;
 	int ret = rapl_read_pkg_energy_uj_on_cpu(0, &raw);
 	if (ret) {
@@ -344,8 +353,9 @@ static u64 sample_pkg_power(void)
 	if (unlikely(dt_ns == 0))
 		return 0;
 
-	u64 numerator = mul_u64_u64_div_u64(d_raw, 1000000000000ULL, dt_ns);
-	return numerator >> 32;
+	// Power in mW = energy in uJ / time in ms = energy in uJ / time in ns * 1e6
+	u64 power = div64_u64(d_raw * 1000000, dt_ns);
+	return power;
 }
 
 static void pacct_gather_total_power_workfn(struct work_struct *work)
