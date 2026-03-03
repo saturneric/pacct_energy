@@ -55,12 +55,8 @@ void setup_proc_file(struct traced_task *entry)
 	// expose all the values we have
 	proc_create_data("energy_uj", 0444, entry->proc_entry.process_dir, &ops,
 			 &entry->energy);
-	proc_create_data("power_a_uw", 0444, entry->proc_entry.process_dir, &ops,
-			 &entry->power_a);
-	proc_create_data("power_i_uw", 0444, entry->proc_entry.process_dir, &ops,
-			 &entry->power_i);
-	proc_create_data("power_w_uw", 0444, entry->proc_entry.process_dir, &ops,
-			 &entry->power_w);
+	proc_create_data("power_mW", 0444, entry->proc_entry.process_dir, &ops,
+			 &entry->power_mW);
 	for (size_t i = 0; i < PACCT_TRACED_EVENT_COUNT; i++)
 	{
 		sprintf(sbuf, "r%02x%02x", tracked_events[i].umask, tracked_events[i].event_code);

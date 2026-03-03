@@ -80,32 +80,18 @@ struct traced_task {
 	bool ready;
 	bool retiring; // Flag to indicate if this task is being retired and should not be sampled anymore
 	struct perf_event *event[PACCT_TRACED_EVENT_COUNT];
-
-	// pref counts for each event, updated on context switches
-	u64 counts[PACCT_TRACED_EVENT_COUNT];
-	// estimated energy consumption based on the diff counts and coefficients
-	atomic64_t diff_counts[PACCT_TRACED_EVENT_COUNT];
-
-	// Execution runtime tracking for power estimation
-	u64 last_exec_runtime;
-	atomic64_t delta_exec_runtime_acc;
-	u64 total_exec_runtime_acc;
-
-	// Wall clock timestamp of the last context switch for this task, also used for power estimation
-	atomic64_t last_timestamp_ns;
+	
+	//Timestamp for power estimation
 	u64 better_timestamp_ns;
-	atomic64_t delta_timestamp_acc;
+	
+	// counts for each event, only buffered for the proc filesystem
+	atomic64_t counts[PACCT_TRACED_EVENT_COUNT];
 
 	// estimated energy consumption
 	atomic64_t energy;
-	// estimated avg power consumption (based on execution runtime)
-	atomic64_t power_a;
-	// estimated instant power consumption (based on execution runtime)
-	atomic64_t power_i;
-	// estimated power consumption based on wall clock time - this can help us
-	// capture power of sleeping tasks which might not have much execution runtime
-	// but can still consume power due to background activity like memory accesses
-	atomic64_t power_w; //In mW
+
+	// estimated power consumption based on wall clock time
+	atomic64_t power_mW; //In mW
 
 	// Number of times this task has been recorded in the energy estimation work.
 	atomic_t record_count;

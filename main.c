@@ -36,28 +36,6 @@ static struct traced_task *get_traced_task(pid_t pid)
 	return get_or_create_traced_task(pid, NULL, false);
 }
 
-static __inline__ u64 u64_delta_sat(u64 now, u64 prev)
-{
-	return (now >= prev) ? (now - prev) : 0;
-}
-
-static __inline__ void init_traced_task(struct traced_task *e, u64 exec_runtime)
-{
-	// This can happen at init time because we set last_exec_runtime to 0 initially
-	// and only update it after the first switch.
-	WRITE_ONCE(e->last_exec_runtime, exec_runtime);
-	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
-		struct perf_event *ev = READ_ONCE(e->event[i]);
-		if (ev && !IS_ERR(ev))
-			WRITE_ONCE(e->counts[i], read_event_count(ev));
-	}
-
-	// Also set the last timestamp to now to avoid having a large delta at the first estimation
-	u64 now = ktime_get_ns();
-	atomic64_set(&e->last_timestamp_ns, now);
-	return;
-}
-
 static void pacct_process_fork(void *ignore, struct task_struct *parent,
 			       struct task_struct *child)
 {
@@ -82,43 +60,27 @@ static void pacct_process_fork(void *ignore, struct task_struct *parent,
 	kref_put(&e->ref_count, release_traced_task);
 }
 
+//move task from traced_tasks to retiring_traced_tasks
 static void pacct_process_exit(void *ignore, struct task_struct *p)
 {
 	struct traced_task *e = get_traced_task(p->pid);
 	if (!e)
 		return;
 
-	// Record final event counts for this exiting task before we clean it up.
-	record_task_event_counts(e, p);
-
 	// Mark this task as retiring so that the sample_workfn can skip it if it hasn't run yet
+	// TODO: Is it not already skipped by not being in the list?
+	// TODO: How can the final counters be measured? Do even want to? (The proc file which would display the values will be deleted anyway)
 	WRITE_ONCE(e->retiring, true);
 
 	// remove from traced_tasks
 	spin_lock(&traced_tasks_lock);
 	list_del_init(&e->list);
-	spin_unlock(&traced_tasks_lock);
-
-	// // print debug info about the exiting task
-	// pr_info("Process exiting: PID %d, COMM \"%s\", energy estimate %llu (uJ), power estimate %llu (mW), exec_runtime=%llu\n",
-	// 	e->pid, p->comm, atomic64_read(&e->energy),
-	// 	atomic64_read(&e->power_a), p->se.sum_exec_runtime);
-
-	// // If energy is not zero, print the final event counts and diffs for this task
-	// // This can help us understand the event activity of the task.
-	// if (atomic64_read(&e->energy) != 0) {
-	// 	pr_info("Event counts for exiting PID %d:\n", e->pid);
-	// 	// print each event's final count and diff for this exiting task
-	// 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
-	// 		pr_info("[%d]: count=%llu, diff=%llu\n", i,
-	// 			e->counts[i],
-	// 			atomic64_read(&e->diff_counts[i]));
-	// 	}
-	// }
-
+	
 	// add to retiring_traced_tasks for cleanup
 	list_add_tail(&e->retire_node, &retiring_traced_tasks);
 
+	spin_unlock(&traced_tasks_lock);
+	
 	// we'd got a ref from get_traced_task()
 	kref_put(&e->ref_count, release_traced_task);
 }
@@ -206,10 +168,6 @@ static int __init pacct_energy_init(void) //Start of the module
 
 	return 0;
 
-err_tp_sched_exit:
-	if (tp_sched_exit)
-		tracepoint_probe_unregister(tp_sched_exit,
-					    (void *)pacct_process_exit, NULL);
 err_tp_sched_fork:
 	if (tp_sched_fork)
 		tracepoint_probe_unregister(tp_sched_fork,

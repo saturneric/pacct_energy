@@ -26,18 +26,11 @@ struct traced_task *new_traced_task(pid_t pid)
 	entry->ready = false;
 	entry->retiring = false;
 	atomic64_set(&entry->energy, 0);
-	atomic64_set(&entry->power_a, 0);
-	atomic64_set(&entry->power_i, 0);
-	atomic64_set(&entry->power_w, 0);
-	entry->last_exec_runtime = 0;
-	atomic64_set(&entry->delta_exec_runtime_acc, 0);
-	entry->total_exec_runtime_acc = 0;
+	atomic64_set(&entry->power_mW, 0);
 	entry->comm[0] = '\0';
 	atomic_set(&entry->record_count, 0);
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 		entry->event[i] = NULL;
-		entry->counts[i] = 0;
-		atomic64_set(&entry->diff_counts[i], 0);
 	}
 	return entry;
 }
@@ -105,6 +98,9 @@ int setup_traced_task(struct traced_task *entry)
 {
 	int ret;
 	kref_get(&entry->ref_count);
+
+	entry->better_timestamp_ns = ktime_get_ns(); // Set first timestamp for begin of power calculation
+
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 		if (entry->event[i] && !IS_ERR(entry->event[i]))
 			continue; // Counter already set up for this event
