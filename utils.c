@@ -43,3 +43,22 @@ u64 read_event_count(struct perf_event *ev)
 		(running ? mul_u64_u64_div_u64(val, enabled, running) : val);
 	return scaled;
 }
+
+u64 read_event_count_sleepable(struct perf_event *ev)
+{
+	// the time (in perf time units) the event was enabled (counting or not)
+	u64 enabled = 0;
+	// the time (in perf time units) the event was actually running (counting)
+	u64 running = 0;
+
+	if (!ev)
+		return 0;
+
+	// Read the raw count and scale it based on the time the event was enabled and running
+	u64 val = perf_event_read_value(ev, &enabled, &running);
+
+	// Scale the raw count to account for time when the event was enabled but not running
+	u64 scaled =
+		(running ? mul_u64_u64_div_u64(val, enabled, running) : val);
+	return scaled;
+}

@@ -27,7 +27,7 @@ struct list_head retiring_traced_tasks;
 spinlock_t traced_tasks_lock;
 
 // Global variable to hold the total estimated power consumption across all traced tasks
-u64 total_power; // average power in mW (based on wall clock time)
+s64 total_power; // average power in mW (based on wall clock time)
 
 // RAPL things
 u64 last_pkg_raw, last_ns;

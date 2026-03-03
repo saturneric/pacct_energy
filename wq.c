@@ -19,7 +19,7 @@
 extern struct list_head traced_tasks;
 extern struct list_head retiring_traced_tasks;
 extern spinlock_t traced_tasks_lock;
-extern u64 total_power;
+extern s64 total_power;
 extern u64 last_pkg_raw, last_ns;
 
 static atomic_t estimator_enabled = ATOMIC_INIT(0);
@@ -131,25 +131,31 @@ void queue_pacct_retire_work(void)
 	queue_work(system_unbound_wq, &pacct_retire_work);
 }
 
-
-
 // Estimate the energy from the counters via the model and calculate the power for each traced task
 static __inline__ void pacct_estimate_traced_task_energy(struct traced_task *e)
 {
 	s64 energy_uj = 0;
 
-	
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 		struct perf_event *ev = READ_ONCE(e->event[i]);
 		if (ev && !IS_ERR(ev)) {
-			u64 ignored;
-			u64 counter = perf_event_read_value(ev, &ignored, &ignored);
+			u64 counter = read_event_count_sleepable(ev);
+
+			// pr_info("PID %d(%s), Event %d: counter=%llu, coeff=%lld\n",
+			// 	e->pid, e->comm, i, counter, tracked_events[i].coeff);
+
 			// do energy_uj += (s64) counter * tracked_events[i].coeff with overflow checking
-			if (counter > S64_MAX) pr_warn("casting overflow for event %d", i);
+			if (counter > S64_MAX)
+				pr_warn("casting overflow for event %d", i);
 			s64 energy_single_uj;
-			if (check_mul_overflow((s64)counter, tracked_events[i].coeff, &energy_single_uj)) {
-				pr_warn("multiplication overflow for event %d", i);
-			} else if (check_add_overflow(energy_uj, energy_single_uj, &energy_uj)) {
+			if (check_mul_overflow((s64)counter,
+					       tracked_events[i].coeff,
+					       &energy_single_uj)) {
+				pr_warn("multiplication overflow for event %d",
+					i);
+			} else if (check_add_overflow(energy_uj,
+						      energy_single_uj,
+						      &energy_uj)) {
 				pr_warn("addition overflow for event %d", i);
 			}
 		} else {
@@ -158,10 +164,9 @@ static __inline__ void pacct_estimate_traced_task_energy(struct traced_task *e)
 	}
 	energy_uj /= COUNTER_SCALE;
 
-	if (energy_uj < 0) {
-		pr_info("Encountered total negative energy estimation.");
-		
-	}
+	// multiple by 28% to match the rapl value
+	energy_uj = (energy_uj * 9) >> 5;
+
 	s64 old_energy_uj = atomic64_xchg(&e->energy, energy_uj);
 	if (e->better_timestamp_ns == 0) {
 		atomic64_set(&e->power_w, 0);
@@ -169,117 +174,26 @@ static __inline__ void pacct_estimate_traced_task_energy(struct traced_task *e)
 		return;
 	}
 	s64 d_energy_uj = energy_uj - old_energy_uj;
-	if (d_energy_uj < 0) {
-		pr_info("Encountered momentary negative energy estimation.");
-	}
+	// if (d_energy_uj < 0) {
+	// 	pr_info("Negative energy estimation, pid=%d(%s), energy_uj=%lld, old_energy_uj=%lld\n",
+	// 		e->pid, e->comm, energy_uj, old_energy_uj);
+	// }
+
 	u64 now_ns = ktime_get_ns();
 	u64 d_time_ns = now_ns - e->better_timestamp_ns;
-	if (d_time_ns == 0) {
+	if (unlikely(d_time_ns == 0)) {
 		pr_warn("zero time passed since last power calculation");
 		return;
 	}
+
 	e->better_timestamp_ns = now_ns;
-	s64 power_mW = div64_s64((d_energy_uj * 1000000LL), (s64) d_time_ns);
-	
+	s64 power_mW = div64_s64((d_energy_uj * 1000000LL), (s64)d_time_ns);
+
+	// if (power_mW > 0)
+	// 	pr_info("PID %d(%s): d_energy=%lld uJ, d_time=%llu ns, power=%lld mW\n",
+	// 		e->pid, e->comm, d_energy_uj, d_time_ns, power_mW);
 	atomic64_set(&e->power_w, power_mW);
 	return;
-
-	u64 diff_count[PACCT_TRACED_EVENT_COUNT];
-	u64 ts_delta_ns;
-	u64 wall_ts_delta_ns;
-
-	// Atomically read and reset the diff_counts and delta_timestamp_acc for this
-	// task. We can get a slightly stale value here, but that's acceptable for
-	// energy estimation, and it can help us avoid contention with the energy
-	// estimation work that might be updating these values at the same time.
-	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
-		diff_count[i] = atomic64_xchg(&e->diff_counts[i], 0);
-	}
-	ts_delta_ns = atomic64_xchg(&e->delta_exec_runtime_acc, 0);
-	wall_ts_delta_ns = atomic64_xchg(&e->delta_timestamp_acc, 0);
-	e->total_exec_runtime_acc += ts_delta_ns;
-
-	// Calculate energy estimation based on diff_counts and coefficients
-	s64 acc = 0;
-	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
-		u64 diff = READ_ONCE(diff_count[i]);
-		if (e->event[i] && !IS_ERR(e->event[i]))
-			acc += diff * tracked_events[i].coeff;
-
-		// print debug info about this event
-		// pr_info("PID %d, Event %d: diff=%llu, coeff=%lld, partial_energy=%lld\n",
-		// 	e->pid, i, diff, tracked_events[i].coeff,
-		// 	(__int128)diff * tracked_events[i].coeff);
-	}
-	acc /= COUNTER_SCALE; //Reverse scaling
-
-	// We might get some negative energy estimation due to noise, but we can just
-	// treat it as zero in that case since negative energy doesn't make sense.
-	if (acc < 0) {
-		pr_info("Encountered negative energy estimation.");
-		acc = 0;
-	}
-
-	atomic64_add(acc, &e->energy); // uJ
-
-	// Calculate power estimation based on energy and time delta
-	u64 energy = atomic64_read(&e->energy);
-	u64 total_exec_runtime_us =
-		e->total_exec_runtime_acc / 1000; // Convert ns to us
-	// To avoid division by zero, we can use the current timestamp delta as an
-	// approximation of the time delta if total_exec_runtime_acc is still zero
-	u64 power = div64_u64(
-		energy * 1000,
-		total_exec_runtime_us ? // nJ / us = 10^-9J/ 10^-6s= 1mW
-			total_exec_runtime_us :
-			1);
-
-	atomic64_set(&e->power_a, power);
-
-	// Calculate power instance based on energy delta and execution runtime delta
-	s64 dE_uJ = acc;
-	if (dE_uJ < 0)
-		dE_uJ = 0;
-
-	u64 dt_us = ts_delta_ns / 1000;
-	if (dt_us == 0)
-		dt_us = 1;
-	u64 power_i = div64_u64((u64)dE_uJ * 1000, dt_us);
-	u64 old = atomic64_read(&e->power_i);
-	// smoothing to reduce noise 75% old value + 25% new value
-	u64 smoothed = (old * 3 + power_i) >> 2;
-
-	// We can get some 0 energy delta due to estimation noise
-	if (dE_uJ != 0) {
-		atomic64_set(&e->power_i, smoothed);
-	}
-
-	// Calculate power based on wall clock time delta
-	dt_us = wall_ts_delta_ns / 1000; //ns / 10^3 = us
-	if (dt_us == 0)
-		dt_us = 1;
-	u64 power_w = div64_u64((u64)dE_uJ * 1000, dt_us); //(uJ * 10^3) / us = mW
-	old = atomic64_read(&e->power_w);
-	// smoothing to reduce noise 75% old value + 25% new value
-	smoothed = (old * 3 + power_w) >> 2;
-
-	// We can get some 0 energy delta due to estimation noise
-	if (dE_uJ != 0) {
-		atomic64_set(&e->power_w, smoothed);
-	}
-
-	// 100W threshold for high power task - this can help us identify any
-	// abnormally high power tasks which might indicate an issue with our
-	// estimation or a real power hog
-	// if (unlikely(power > 100000)) {
-	// 	pr_warn("[!!!!!]High power task: PID %d, energy acc=%lld, energy=%llu uJ, total_exec_runtime_us=%llu, power=%llu mW\n",
-	// 		e->pid, (s64)(acc >> 32), energy, total_exec_runtime_us,
-	// 		power);
-	// 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
-	// 		pr_warn("[!!!!!]Event %d: diff=%llu, coeff=%lld\n", i,
-	// 			diff_count[i], tracked_events[i].coeff);
-	// 	}
-	// }
 }
 
 static void pacct_energy_estimate_workfn(struct work_struct *work)
@@ -303,9 +217,6 @@ static void pacct_energy_estimate_workfn(struct work_struct *work)
 		pacct_estimate_traced_task_energy(e);
 
 		kref_put(&e->ref_count, release_traced_task);
-
-		// pr_info("Estimated energy for PID %d: %llu\n", e->pid,
-		// 	atomic64_read(&e->energy));
 
 		spin_lock(&traced_tasks_lock);
 	}
@@ -430,28 +341,8 @@ static void pacct_gather_total_power_workfn(struct work_struct *work)
 
 		spin_unlock(&traced_tasks_lock);
 
-		u64 pw = atomic64_read(&e->power_w);
+		s64 pw = atomic64_read(&e->power_w);
 		total_power += pw; //should be mW
-
-		// struct task_struct *ts = get_task_by_pid(e->pid);
-		// if (ts) {
-		// 	int cpu = task_cpu(ts);
-
-		// 	// only print tasks running on P-core
-		// 	if (cpu >= 0 && cpu < 12)
-		// 		pr_info("PID %d (%s): energy=%llu uJ, power=%llu mW, "
-		// 			"power_i=%llu mW, power_w=%llu mW record_count=%d, "
-		// 			"cpu=%d\n",
-		// 			e->pid, e->comm,
-		// 			atomic64_read(&e->energy),
-		// 			atomic64_read(&e->power_a),
-		// 			atomic64_read(&e->power_i),
-		// 			atomic64_read(&e->power_w),
-		// 			atomic_read(&e->record_count),
-		// 			task_cpu(ts));
-
-		// 	put_task_struct(ts);
-		// }
 
 		kref_put(&e->ref_count, release_traced_task);
 		spin_lock(&traced_tasks_lock);
@@ -459,8 +350,8 @@ static void pacct_gather_total_power_workfn(struct work_struct *work)
 	spin_unlock(&traced_tasks_lock);
 
 	u64 pkg_power = sample_pkg_power(); //measured using rapl in mW
-	pr_info("Power: estimated power: %llu mW, pkg power: %llu mW\n", total_power,
-		pkg_power);
+	pr_info("Power: estimated power: %lld mW, pkg power: %llu mW\n",
+		total_power, pkg_power);
 
 	// simple power capping control based on the sampled package power
 	if (enable_power_cap)
