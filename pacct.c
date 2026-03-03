@@ -25,7 +25,6 @@ struct traced_task *new_traced_task(pid_t pid)
 	entry->pid = pid;
 	entry->ready = false;
 	entry->retiring = false;
-	entry->needs_setup = true;
 	atomic64_set(&entry->energy, 0);
 	atomic64_set(&entry->power_a, 0);
 	atomic64_set(&entry->power_i, 0);

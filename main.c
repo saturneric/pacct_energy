@@ -186,7 +186,7 @@ static int __init pacct_energy_init(void) //Start of the module
 					(void *)pacct_process_fork, NULL);
 	if (ret) {
 		pr_err("tracepoint_probe_register for fork failed: %d\n", ret);
-		goto err_tp_sched_switch;
+		goto err;
 	}
 
 	ret = tracepoint_probe_register(tp_sched_exit,
@@ -214,10 +214,6 @@ err_tp_sched_fork:
 	if (tp_sched_fork)
 		tracepoint_probe_unregister(tp_sched_fork,
 					    (void *)pacct_process_fork, NULL);
-err_tp_sched_switch:
-	if (tp_sched_switch)
-		tracepoint_probe_unregister(tp_sched_switch,
-					    (void *)pacct_sched_switch, NULL);
 	// Clean up any traced tasks that might have been created before the failure
 	clean_traced_task();
 err:
@@ -228,10 +224,6 @@ static void __exit pacct_energy_exit(void)
 {
 	// Stop the energy estimator work by first
 	pacct_stop_energy_estimator();
-
-	if (tp_sched_switch)
-		tracepoint_probe_unregister(tp_sched_switch,
-					    (void *)pacct_sched_switch, NULL);
 
 	if (tp_sched_fork)
 		tracepoint_probe_unregister(tp_sched_fork,
