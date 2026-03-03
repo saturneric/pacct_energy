@@ -9,7 +9,8 @@
 #define PACCT_PROC_DIR "pacct_energy"
 struct proc_dir_entry *pacct_proc_dir;
 
-void init_proc() {
+void init_proc()
+{
 	pacct_proc_dir = proc_mkdir(PACCT_PROC_DIR, NULL);
 	if (!pacct_proc_dir) {
 		pr_info("Failed to create /proc/%s", PACCT_PROC_DIR);
@@ -17,7 +18,8 @@ void init_proc() {
 	pr_info("pacct_energy: /proc/%s created\n", PACCT_PROC_DIR);
 }
 
-void remove_proc() {
+void remove_proc()
+{
 	if (pacct_proc_dir) {
 		proc_remove(pacct_proc_dir);
 	}
@@ -35,28 +37,25 @@ static int pacct_int_open(struct inode *inode, struct file *file)
 	return single_open(file, pacct_int_show, pde_data(inode));
 }
 
-
 static const struct proc_ops ops = {
-    .proc_open = pacct_int_open,
-    .proc_read = seq_read,
-    .proc_lseek = seq_lseek,
-    .proc_release = single_release,
+	.proc_open = pacct_int_open,
+	.proc_read = seq_read,
+	.proc_lseek = seq_lseek,
+	.proc_release = single_release,
 };
 
-
-void setUpProcFile(struct traced_task *entry) {
-    //Create Directory for process
+void setUpProcFile(struct traced_task *entry)
+{
+	//Create Directory for process
 	char *strPid = kasprintf(GFP_ATOMIC, "%d", entry->pid);
 	entry->proc_entry.process_dir = proc_mkdir(strPid, pacct_proc_dir);
-    kfree(strPid);
+	kfree(strPid);
 
 	proc_create_data("energy_uj", 0444, entry->proc_entry.process_dir, &ops,
 			 &entry->energy);
 }
 
-void freeProcFile(struct traced_task *entry) {
-    proc_remove(entry->proc_entry.process_dir);
+void freeProcFile(struct traced_task *entry)
+{
+	proc_remove(entry->proc_entry.process_dir);
 }
-
-
-
