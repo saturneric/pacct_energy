@@ -47,12 +47,20 @@ static const struct proc_ops ops = {
 void setUpProcFile(struct traced_task *entry)
 {
 	//Create Directory for process
-	char *strPid = kasprintf(GFP_ATOMIC, "%d", entry->pid);
-	entry->proc_entry.process_dir = proc_mkdir(strPid, pacct_proc_dir);
-	kfree(strPid);
+	// we know that 32 byte is enough space for any integer
+	char strpid[32];
+	sprintf(strpid, "%d", entry->pid);
+	entry->proc_entry.process_dir = proc_mkdir(strpid, pacct_proc_dir);
 
+	// expose all the values we have
 	proc_create_data("energy_uj", 0444, entry->proc_entry.process_dir, &ops,
 			 &entry->energy);
+	proc_create_data("power_a_uw", 0444, entry->proc_entry.process_dir, &ops,
+			 &entry->power_a);
+	proc_create_data("power_i_uw", 0444, entry->proc_entry.process_dir, &ops,
+			 &entry->power_i);
+	proc_create_data("power_w_uw", 0444, entry->proc_entry.process_dir, &ops,
+			 &entry->power_w);
 }
 
 void freeProcFile(struct traced_task *entry)
