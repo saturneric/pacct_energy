@@ -47,10 +47,10 @@ static const struct proc_ops ops = {
 void setUpProcFile(struct traced_task *entry)
 {
 	//Create Directory for process
-	// we know that 32 byte is enough space for any integer
-	char strpid[32];
-	sprintf(strpid, "%d", entry->pid);
-	entry->proc_entry.process_dir = proc_mkdir(strpid, pacct_proc_dir);
+	// we know that 32 byte is enough space for any integer and any counter name
+	char sbuf[32];
+	sprintf(sbuf, "%d", entry->pid);
+	entry->proc_entry.process_dir = proc_mkdir(sbuf, pacct_proc_dir);
 
 	// expose all the values we have
 	proc_create_data("energy_uj", 0444, entry->proc_entry.process_dir, &ops,
@@ -61,6 +61,11 @@ void setUpProcFile(struct traced_task *entry)
 			 &entry->power_i);
 	proc_create_data("power_w_uw", 0444, entry->proc_entry.process_dir, &ops,
 			 &entry->power_w);
+	for (size_t i = 0; i < PACCT_TRACED_EVENT_COUNT; i++)
+	{
+		sprintf(sbuf, "r%02x%02x", tracked_events[i].umask, tracked_events[i].event_code);
+		proc_create_data(sbuf, 0444, entry->proc_entry.process_dir, &ops, &entry->counts[i]);
+	}
 }
 
 void freeProcFile(struct traced_task *entry)
