@@ -65,8 +65,7 @@ static bool pick_one_not_ready_candidate(struct traced_task **out)
 
 	spin_lock(&traced_tasks_lock);
 	list_for_each_entry(e, &traced_tasks, list) {
-		if (!READ_ONCE(e->ready) && READ_ONCE(e->needs_setup)) {
-			WRITE_ONCE(e->needs_setup, false);
+		if (!READ_ONCE(e->ready)) {
 			kref_get(&e->ref_count);
 			*out = e;
 			break;
@@ -86,8 +85,14 @@ static void pacct_setup_workfn(struct work_struct *work)
 
 		if (!pick_one_not_ready_candidate(&e))
 			break;
-
-		WRITE_ONCE(e->ready, setup_traced_task_counters(e) == 0);
+		int ret = setup_traced_task(e);
+		if (unlikely(ret != 0))
+		{
+			pr_alert("Failed to set up task. Trying again later");
+		} else {
+			WRITE_ONCE(e->ready,  1);
+		}
+		
 		kref_put(&e->ref_count, release_traced_task);
 
 		cond_resched();
@@ -134,8 +139,9 @@ void queue_pacct_retire_work(void)
 // Estimate the energy from the counters via the model and calculate the power for each traced task
 static __inline__ void pacct_estimate_traced_task_energy(struct traced_task *e)
 {
-	s64 energy_uj = 0;
 
+	s64 energy_uj = 0;
+	
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 		struct perf_event *ev = READ_ONCE(e->event[i]);
 		if (ev && !IS_ERR(ev)) {
@@ -242,7 +248,7 @@ static void pacct_scan_tasks_workfn(struct work_struct *work)
 
 		get_task_struct(ts);
 
-		if (ts->flags & PF_KTHREAD) {
+		if (ts->flags & PF_KTHREAD) { //Ignore kernel
 			put_task_struct(ts);
 			continue;
 		}

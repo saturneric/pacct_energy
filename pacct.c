@@ -40,7 +40,6 @@ struct traced_task *new_traced_task(pid_t pid)
 		entry->counts[i] = 0;
 		atomic64_set(&entry->diff_counts[i], 0);
 	}
-	setUpProcFile(entry);
 	return entry;
 }
 
@@ -103,7 +102,7 @@ err:
 	return ret;
 }
 
-int setup_traced_task_counters(struct traced_task *entry)
+int setup_traced_task(struct traced_task *entry)
 {
 	int ret;
 	kref_get(&entry->ref_count);
@@ -122,6 +121,8 @@ int setup_traced_task_counters(struct traced_task *entry)
 			goto err;
 		}
 	}
+	setup_proc_file(entry);
+	kref_put(&entry->ref_count, release_traced_task);
 	return 0;
 err:
 	kref_put(&entry->ref_count, release_traced_task);

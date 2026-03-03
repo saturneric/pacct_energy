@@ -15,7 +15,6 @@ MODULE_LICENSE("GPL");
 MODULE_VERSION("0.1");
 
 // Tracepoint for events
-static struct tracepoint *tp_sched_switch;
 static struct tracepoint *tp_sched_exit;
 static struct tracepoint *tp_sched_fork;
 
@@ -57,69 +56,6 @@ static __inline__ void init_traced_task(struct traced_task *e, u64 exec_runtime)
 	u64 now = ktime_get_ns();
 	atomic64_set(&e->last_timestamp_ns, now);
 	return;
-}
-
-static void record_task_event_counts(struct traced_task *e,
-				     struct task_struct *ts)
-{
-	atomic_inc(&e->record_count);
-
-	// Update the timestamp and calculate the delta since the last switch
-	u64 exec_runtime = READ_ONCE(ts->se.sum_exec_runtime);
-	u64 last_exec_runtime = READ_ONCE(e->last_exec_runtime);
-	if (last_exec_runtime == 0) {
-		// This can happen if the task is scheduled before we get a chance to initialize it
-		init_traced_task(e, exec_runtime);
-		return;
-	}
-
-	u64 delta = u64_delta_sat(exec_runtime, last_exec_runtime);
-	WRITE_ONCE(e->last_exec_runtime, exec_runtime);
-	atomic64_add(delta, &e->delta_exec_runtime_acc);
-
-	u64 now = ktime_get_ns();
-	u64 last_timestamp = atomic64_read(&e->last_timestamp_ns);
-	if (unlikely(last_timestamp == 0)) {
-		// This can happen if the task is scheduled before we get a chance to initialize it
-		init_traced_task(e, exec_runtime);
-		return;
-	}
-
-	delta = u64_delta_sat(now, last_timestamp);
-	atomic64_set(&e->last_timestamp_ns, now);
-	atomic64_add(delta, &e->delta_timestamp_acc);
-
-	// For each event, read the current count, calculate the diff since last time,
-	// and accumulate the diff
-	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
-		struct perf_event *ev = READ_ONCE(e->event[i]);
-		if (ev && !IS_ERR(ev)) {
-			u64 val = read_event_count(ev); // new value
-			u64 diff = u64_delta_sat(val, READ_ONCE(e->counts[i]));
-
-			atomic64_add(diff, &e->diff_counts[i]);
-			WRITE_ONCE(e->counts[i], val);
-		}
-	}
-}
-
-static void pacct_sched_switch(void *ignore, bool preempt,
-			       struct task_struct *prev,
-			       struct task_struct *next)
-{
-	struct traced_task *e = get_traced_task(prev->pid);
-	if (!e)
-		return;
-
-	if (!READ_ONCE(e->ready)) {
-		WRITE_ONCE(e->needs_setup, true);
-		goto out;
-	}
-
-	record_task_event_counts(e, prev);
-
-out:
-	kref_put(&e->ref_count, release_traced_task);
 }
 
 static void pacct_process_fork(void *ignore, struct task_struct *parent,
@@ -193,9 +129,7 @@ static void tp_lookup_cb(struct tracepoint *tp, void *priv)
 	const char *name = priv;
 
 	if (!strcmp(tp->name, name)) {
-		if (!strcmp(name, "sched_switch"))
-			tp_sched_switch = tp;
-		else if (!strcmp(name, "sched_process_exit"))
+		if (!strcmp(name, "sched_process_exit"))
 			tp_sched_exit = tp;
 		else if (!strcmp(name, "sched_process_fork"))
 			tp_sched_fork = tp;
@@ -233,13 +167,6 @@ static int __init pacct_energy_init(void) //Start of the module
 	}
 
 	//find the needed tracepoints
-	for_each_kernel_tracepoint(tp_lookup_cb, "sched_switch");
-	if (!tp_sched_switch) {
-		pr_err("tracepoint sched_switch not found\n");
-		ret = -ENOENT;
-		goto err;
-	}
-
 	for_each_kernel_tracepoint(tp_lookup_cb, "sched_process_fork");
 	if (!tp_sched_fork) {
 		pr_err("tracepoint sched_process_fork not found\n");
@@ -255,13 +182,6 @@ static int __init pacct_energy_init(void) //Start of the module
 	}
 
 	// Register the functions to be called on the trace points
-	ret = tracepoint_probe_register(tp_sched_switch,
-					(void *)pacct_sched_switch, NULL);
-	if (ret) {
-		pr_err("tracepoint_probe_register failed: %d\n", ret);
-		goto err;
-	}
-
 	ret = tracepoint_probe_register(tp_sched_fork,
 					(void *)pacct_process_fork, NULL);
 	if (ret) {

@@ -44,7 +44,7 @@ static const struct proc_ops ops = {
 };
 
 
-void setUpProcFile(struct traced_task *entry) {
+void setup_proc_file(struct traced_task *entry) {
     //Create Directory for process
 	char *strPid = kasprintf(GFP_ATOMIC, "%d", entry->pid);
 	entry->proc_entry.process_dir = proc_mkdir(strPid, pacct_proc_dir);

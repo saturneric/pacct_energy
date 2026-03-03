@@ -79,7 +79,6 @@ struct traced_task {
 	pid_t pid;
 	bool ready;
 	bool retiring; // Flag to indicate if this task is being retired and should not be sampled anymore
-	bool needs_setup;
 	struct perf_event *event[PACCT_TRACED_EVENT_COUNT];
 
 	// pref counts for each event, updated on context switches
@@ -118,7 +117,7 @@ struct traced_task {
 
 struct traced_task *new_traced_task(pid_t pid);
 void release_traced_task(struct kref *kref);
-int setup_traced_task_counters(struct traced_task *entry);
+int setup_traced_task(struct traced_task *entry);
 struct traced_task *get_or_create_traced_task(pid_t pid, const char *comm,
 					      bool create);
 
