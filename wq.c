@@ -202,7 +202,7 @@ static __inline__ void pacct_estimate_traced_task_energy(struct traced_task *e)
 	energy_uj /= COUNTER_SCALE;
 
 	// multiple by 28% to match the rapl value
-	energy_uj = (energy_uj * 9) >> 5;
+	//energy_uj = (energy_uj * 9) >> 5;
 
 	s64 old_energy_uj = atomic64_xchg(&e->energy, energy_uj);
 	if (e->better_timestamp_ns == 0) {
