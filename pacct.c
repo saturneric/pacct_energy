@@ -25,10 +25,9 @@ struct traced_task *new_traced_task(pid_t pid)
 	entry->pid = pid;
 	entry->ready = false;
 	entry->retiring = false;
-	atomic64_set(&entry->energy, 0);
-	atomic64_set(&entry->power_mW, 0);
+	entry->energy_uj = 0;
+	entry->power_mW = 0;
 	entry->comm[0] = '\0';
-	atomic_set(&entry->record_count, 0);
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 		entry->event[i] = NULL;
 	}

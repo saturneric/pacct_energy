@@ -19,7 +19,6 @@
 extern struct list_head traced_tasks;
 extern struct list_head retiring_traced_tasks;
 extern spinlock_t traced_tasks_lock;
-extern s64 total_power;
 extern u64 last_pkg_raw, last_ns;
 
 static atomic_t estimator_enabled = ATOMIC_INIT(0);
@@ -176,7 +175,7 @@ static __inline__ void pacct_estimate_traced_task_energy(struct traced_task *e)
 		struct perf_event *ev = READ_ONCE(e->event[i]);
 		if (ev && !IS_ERR(ev)) {
 			u64 counter = read_event_count_sleepable(ev);
-			atomic64_set(&e->counts[i], (s64) counter); // Buffer for proc filesystem
+			e->counts[i] = (s64) counter; // Buffer for proc filesystem
 			
 			// pr_info("PID %d(%s), Event %d: counter=%llu, coeff=%lld\n",
 			// 	e->pid, e->comm, i, counter, tracked_events[i].coeff);
@@ -204,9 +203,10 @@ static __inline__ void pacct_estimate_traced_task_energy(struct traced_task *e)
 	// multiple by 28% to match the rapl value
 	//energy_uj = (energy_uj * 9) >> 5;
 
-	s64 old_energy_uj = atomic64_xchg(&e->energy, energy_uj);
+	s64 old_energy_uj = e->energy_uj;
+	e->energy_uj = energy_uj;
 	if (e->better_timestamp_ns == 0) {
-		atomic64_set(&e->power_mW, 0);
+		e->power_mW = 0;
 		e->better_timestamp_ns = ktime_get_ns();
 		return;
 	}
@@ -229,7 +229,7 @@ static __inline__ void pacct_estimate_traced_task_energy(struct traced_task *e)
 	// if (power_mW > 0)
 	// 	pr_info("PID %d(%s): d_energy=%lld uJ, d_time=%llu ns, power=%lld mW\n",
 	// 		e->pid, e->comm, d_energy_uj, d_time_ns, power_mW);
-	atomic64_set(&e->power_mW, power_mW);
+	e->power_mW = power_mW;
 	return;
 }
 
@@ -268,7 +268,7 @@ static DECLARE_DELAYED_WORK(pacct_energy_estimate_work,
 			    pacct_energy_estimate_workfn);
 
 
-// ------- Gather power of all traced tasks and compare with rapl -------
+// ------- Gather stats of all traced tasks and compare with rapl -------
 
 static u32 rapl_eu_shift; // energy unit shift
 
@@ -301,8 +301,8 @@ static int rapl_read_pkg_energy_uj_on_cpu(int cpu, u64 *uj)
 }
 
 
-//Calculate the power measured via rapl
-static u64 sample_pkg_power(void)
+//Calculate the power and energy measured via rapl
+static int sample_pkg_power(u64 *power_mW, u64 *energy_uj)
 {
 	// u64 raw = read_event_count(evt_cores);
 	u64 now = ktime_get_ns();
@@ -312,48 +312,50 @@ static u64 sample_pkg_power(void)
 		if (ret) {
 			pr_err("Failed to read RAPL energy unit shift: %d\n",
 			       ret);
-			return 0;
+			return 1;
 		}
 		pr_info("RAPL energy unit shift: %u\n", rapl_eu_shift);
 	}
 
-	u64 raw = 0;
-	int ret = rapl_read_pkg_energy_uj_on_cpu(0, &raw);
+	int ret = rapl_read_pkg_energy_uj_on_cpu(0, energy_uj);
 	if (ret) {
 		pr_err("Failed to read RAPL energy on CPU 0: %d\n", ret);
-		return 0;
+		return 1;
 	}
 
-	pr_info("RAPL raw energy: %llu (uJ)\n", raw);
+	pr_info("RAPL raw energy: %llu (uJ)\n", *energy_uj);
 
-	if (last_pkg_raw == 0) {
-		last_pkg_raw = raw;
+	if (last_pkg_raw == 0) { //First time this function was called
+		last_pkg_raw = *energy_uj;
 		last_ns = now;
-		return 0;
+		return 1;
 	}
 
-	u64 d_raw = raw - last_pkg_raw;
+	u64 d_raw = *energy_uj - last_pkg_raw;
 	u64 dt_ns = now - last_ns;
 
-	last_pkg_raw = raw;
+	last_pkg_raw = *energy_uj;
 	last_ns = now;
 
 	if (unlikely(dt_ns == 0))
-		return 0;
+		return 1;
 
 	// Power in mW = energy in uJ / time in ms = energy in uJ / time in ns * 1e6
-	u64 power = div64_u64(d_raw * 1000000, dt_ns);
-	return power;
+	*power_mW = div64_u64(d_raw * 1000000, dt_ns);
+	return 0;
 }
 
-static void pacct_gather_total_power_workfn(struct work_struct *work)
+static void pacct_gather_total_stats_workfn(struct work_struct *work)
 {
 	struct delayed_work *dwork =
 		container_of(work, struct delayed_work, work);
 	struct traced_task *e;
 	struct traced_task *n;
 
-	WRITE_ONCE(total_power, 0);
+	//Summed values
+	s64 sum_counter[PACCT_TRACED_EVENT_COUNT] = {0};
+	s64 sum_energy = 0;
+	s64 sum_power = 0;
 
 	spin_lock(&traced_tasks_lock);
 	list_for_each_entry_safe(e, n, &traced_tasks, list) {
@@ -363,32 +365,45 @@ static void pacct_gather_total_power_workfn(struct work_struct *work)
 			kref_put(&e->ref_count, release_traced_task);
 			continue;
 		}
-
 		spin_unlock(&traced_tasks_lock);
-
-		s64 pw = atomic64_read(&e->power_mW);
-		total_power += pw; //should be mW
+		
+		for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
+			sum_counter[i] += e->counts[i];
+		}
+		sum_energy += e->energy_uj;
+		sum_power += e->power_mW;
 
 		kref_put(&e->ref_count, release_traced_task);
 		spin_lock(&traced_tasks_lock);
 	}
 	spin_unlock(&traced_tasks_lock);
 
-	u64 pkg_power = sample_pkg_power(); //measured using rapl in mW
-	pr_info("Power: estimated power: %lld mW, pkg power: %llu mW\n",
-		total_power, pkg_power);
+	global_stats.energy = sum_energy;
+	global_stats.power = sum_power;
+	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
+		global_stats.counter[i] = sum_counter[i];
+	}
+
+	u64 rapl_power_mW;  //measured using rapl in mW
+	u64 rapl_energy_uj; //measured using rapl in uJ
+	if (!sample_pkg_power(&rapl_power_mW, &rapl_energy_uj)) {
+		global_stats.power_rapl = rapl_power_mW;
+		global_stats.energy_rapl = rapl_energy_uj;
+		pr_info("Power: estimated power: %lld mW, pkg power: %llu mW\n",
+			sum_power, rapl_power_mW);
+	}
 
 	// simple power capping control based on the sampled package power
 	if (enable_power_cap)
-		pacct_powercap_control_step(pkg_power);
+		pacct_powercap_control_step(rapl_power_mW);
 
 	if (atomic_read(&estimator_enabled))
 		schedule_delayed_work(
 			dwork, msecs_to_jiffies(TOTAL_POWER_GATHER_PERIOD_MS));
 }
 
-static DECLARE_DELAYED_WORK(pacct_gather_total_power_work,
-			    pacct_gather_total_power_workfn);
+static DECLARE_DELAYED_WORK(pacct_gather_total_stats_work,
+			    pacct_gather_total_stats_workfn);
 
 //--------- Start or stop periodic tasks -----------
 
@@ -401,7 +416,7 @@ void pacct_start_energy_estimator(void)
 	schedule_delayed_work(&pacct_energy_estimate_work,
 			      msecs_to_jiffies(ENERGY_ESTIMATE_PERIOD_MS));
 	// Sum power of all processes and compare to rapl printing to log
-	schedule_delayed_work(&pacct_gather_total_power_work,
+	schedule_delayed_work(&pacct_gather_total_stats_work,
 			      msecs_to_jiffies(TOTAL_POWER_GATHER_PERIOD_MS));
 }
 
@@ -409,5 +424,5 @@ void pacct_stop_energy_estimator(void)
 {
 	atomic_set(&estimator_enabled, 0);
 	cancel_delayed_work_sync(&pacct_energy_estimate_work);
-	cancel_delayed_work_sync(&pacct_gather_total_power_work);
+	cancel_delayed_work_sync(&pacct_gather_total_stats_work);
 }

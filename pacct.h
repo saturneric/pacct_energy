@@ -60,16 +60,12 @@ static struct {
 
 #define PACCT_TRACED_EVENT_COUNT ARRAY_SIZE(tracked_events)
 
-struct proc_entry {
-	struct proc_dir_entry *process_dir;
-};
-
 struct traced_task {
 	struct list_head list;
 	struct list_head retire_node; // Node for the retiring_traced_tasks list
 	struct kref ref_count; // Reference count for this traced task entry
 	pid_t pid;
-	bool ready;
+	bool ready; // If the task is ready to be sampled
 	bool retiring; // Flag to indicate if this task is being retired and should not be sampled anymore
 	struct perf_event *event[PACCT_TRACED_EVENT_COUNT];
 	
@@ -77,21 +73,26 @@ struct traced_task {
 	u64 better_timestamp_ns;
 	
 	// counts for each event, only buffered for the proc filesystem
-	atomic64_t counts[PACCT_TRACED_EVENT_COUNT];
+	s64 counts[PACCT_TRACED_EVENT_COUNT];
 
 	// estimated energy consumption
-	atomic64_t energy;
+	s64 energy_uj;
 
 	// estimated power consumption based on wall clock time
-	atomic64_t power_mW; //In mW
-
-	// Number of times this task has been recorded in the energy estimation work.
-	atomic_t record_count;
+	s64 power_mW;
 
 	char comm[TASK_COMM_LEN];
 
-	struct proc_entry proc_entry; // Associated file under proc
+	struct proc_dir_entry *process_dir; // Associated file under proc
 };
+
+static struct {
+	s64 counter[PACCT_TRACED_EVENT_COUNT];
+	s64 energy;
+	s64 power;
+	s64 energy_rapl;
+	s64 power_rapl;
+} global_stats = {};
 
 struct traced_task *new_traced_task(pid_t pid);
 void release_traced_task(struct kref *kref);

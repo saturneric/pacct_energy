@@ -25,16 +25,8 @@ struct list_head retiring_traced_tasks;
 // Lock to protect access to the traced_tasks list
 spinlock_t traced_tasks_lock;
 
-// Global variable to hold the total estimated power consumption across all traced tasks
-s64 total_power; // average power in mW (based on wall clock time)
-
 // RAPL things
 u64 last_pkg_raw, last_ns;
-
-static struct traced_task *get_traced_task(pid_t pid)
-{
-	return get_or_create_traced_task(pid, NULL, false);
-}
 
 static void pacct_process_fork(void *ignore, struct task_struct *parent,
 			       struct task_struct *child)
@@ -63,7 +55,7 @@ static void pacct_process_fork(void *ignore, struct task_struct *parent,
 //move task from traced_tasks to retiring_traced_tasks
 static void pacct_process_exit(void *ignore, struct task_struct *p)
 {
-	struct traced_task *e = get_traced_task(p->pid);
+	struct traced_task *e = get_or_create_traced_task(p->pid, NULL, false);
 	if (!e)
 		return;
 
