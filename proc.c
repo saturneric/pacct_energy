@@ -12,18 +12,37 @@
 
 struct proc_dir_entry *pacct_proc_dir;
 
-void init_proc()
+static int pacct_int_show(struct seq_file *m, void *v)
 {
-	pacct_proc_dir = proc_mkdir(PACCT_PROC_DIR, NULL);
-	if (!pacct_proc_dir) {
-		pr_info("Failed to create /proc/%s", PACCT_PROC_DIR);
-	} else {
-		pr_info("pacct_energy: /proc/%s created\n", PACCT_PROC_DIR);
-	}
-	setup_global_proc_file();
+	s64 *value = m->private;
+	seq_printf(m, "%lld\n", *value);
+	return 0;
 }
 
-void static setup_global_proc_file()
+static int pacct_int_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, pacct_int_show, pde_data(inode));
+}
+
+static const struct proc_ops ops = {
+	.proc_open = pacct_int_open,
+	.proc_read = seq_read,
+	.proc_lseek = seq_lseek,
+	.proc_release = single_release,
+};
+
+
+static void create_counter_files(char *name_buffer, struct proc_dir_entry *dir, s64 *counters)
+{	
+	for (size_t i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
+		sprintf(name_buffer, "r%02x%02x", tracked_events[i].umask,
+			tracked_events[i].event_code);
+		proc_create_data(name_buffer, ACCESS_RIGHTS, dir, &ops,
+					&counters[i]);
+	}
+}
+
+static void setup_global_proc_file(void)
 {
 	struct proc_dir_entry *total_stats_dir =
 		proc_mkdir(PACCT_GLOBAL_STATS_DIR, pacct_proc_dir);
@@ -44,32 +63,6 @@ void static setup_global_proc_file()
 			 &global_stats.power_rapl);
 }
 
-void remove_proc()
-{
-	if (pacct_proc_dir) {
-		proc_remove(pacct_proc_dir);
-	}
-}
-
-static int pacct_int_show(struct seq_file *m, void *v)
-{
-	s64 *value = m->private;
-	seq_printf(m, "%lld\n", *value);
-	return 0;
-}
-
-static int pacct_int_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, pacct_int_show, pde_data(inode));
-}
-
-static const struct proc_ops ops = {
-	.proc_open = pacct_int_open,
-	.proc_read = seq_read,
-	.proc_lseek = seq_lseek,
-	.proc_release = single_release,
-};
-
 void setup_proc_file(struct traced_task *entry)
 {
 	//Create Directory for process
@@ -86,17 +79,25 @@ void setup_proc_file(struct traced_task *entry)
 	create_counter_files(name_buffer, entry->process_dir, entry->counts);
 }
 
-void static create_counter_files(char *name_buffer, struct proc_dir_entry *dir, s64 *counters)
-{	
-	for (size_t i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
-		sprintf(name_buffer, "r%02x%02x", tracked_events[i].umask,
-			tracked_events[i].event_code);
-		proc_create_data(name_buffer, ACCESS_RIGHTS, dir, &ops,
-					&counters[i]);
-	}
-}
-
 void freeProcFile(struct traced_task *entry)
 {
 	proc_remove(entry->process_dir);
+}
+
+void init_proc()
+{
+	pacct_proc_dir = proc_mkdir(PACCT_PROC_DIR, NULL);
+	if (!pacct_proc_dir) {
+		pr_info("Failed to create /proc/%s", PACCT_PROC_DIR);
+	} else {
+		pr_info("pacct_energy: /proc/%s created\n", PACCT_PROC_DIR);
+	}
+	setup_global_proc_file();
+}
+
+void remove_proc()
+{
+	if (pacct_proc_dir) {
+		proc_remove(pacct_proc_dir);
+	}
 }
