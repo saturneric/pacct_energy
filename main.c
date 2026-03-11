@@ -15,6 +15,7 @@ MODULE_LICENSE("GPL");
 MODULE_VERSION("0.1");
 
 // Tracepoint for events
+static struct tracepoint *tp_sched_switch;
 static struct tracepoint *tp_sched_exit;
 static struct tracepoint *tp_sched_fork;
 
@@ -30,6 +31,28 @@ u64 last_pkg_raw, last_ns;
 
 // Global statistics
 struct stats global_stats = {};
+
+static void pacct_sched_switch(void *ignore, bool preempt,
+			       struct task_struct *prev,
+			       struct task_struct *next)
+{
+	struct traced_task *e =
+		get_or_create_traced_task(prev->pid, NULL, false);
+	if (!e)
+		return;
+
+	if (!READ_ONCE(e->ready)) {
+		// TODO should we check that this doesn't happen too often?
+		goto out;
+	}
+
+	unsigned int cpu = task_cpu(prev);
+	// TODO	find out on which CPU type the task ran, get timestamp and save somewhere
+	// if the core type changed (?or is subject to change?), read counter values
+
+out:
+	kref_put(&e->ref_count, release_traced_task);
+}
 
 static void pacct_process_fork(void *ignore, struct task_struct *parent,
 			       struct task_struct *child)
@@ -70,12 +93,12 @@ static void pacct_process_exit(void *ignore, struct task_struct *p)
 	// remove from traced_tasks
 	spin_lock(&traced_tasks_lock);
 	list_del_init(&e->list);
-	
+
 	// add to retiring_traced_tasks for cleanup
 	list_add_tail(&e->retire_node, &retiring_traced_tasks);
 
 	spin_unlock(&traced_tasks_lock);
-	
+
 	// we'd got a ref from get_traced_task()
 	kref_put(&e->ref_count, release_traced_task);
 }
@@ -83,14 +106,13 @@ static void pacct_process_exit(void *ignore, struct task_struct *p)
 //Looks for the wanted tracepoints and store in static variables
 static void tp_lookup_cb(struct tracepoint *tp, void *priv)
 {
-	const char *name = priv;
-
-	if (!strcmp(tp->name, name)) {
-		if (!strcmp(name, "sched_process_exit"))
-			tp_sched_exit = tp;
-		else if (!strcmp(name, "sched_process_fork"))
-			tp_sched_fork = tp;
-	}
+	(void)priv;
+	if (!strcmp(tp->name, "sched_switch"))
+		tp_sched_switch = tp;
+	else if (!strcmp(tp->name, "sched_process_fork"))
+		tp_sched_fork = tp;
+	else if (!strcmp(tp->name, "sched_process_exit"))
+		tp_sched_exit = tp;
 }
 
 static void clean_traced_task(void)
@@ -124,14 +146,17 @@ static int __init pacct_energy_init(void) //Start of the module
 	}
 
 	//find the needed tracepoints
-	for_each_kernel_tracepoint(tp_lookup_cb, "sched_process_fork");
+	for_each_kernel_tracepoint(tp_lookup_cb, NULL);
+	if (!tp_sched_switch) {
+		pr_err("tracepoint sched_switch not found\n");
+		ret = -ENOENT;
+		goto err;
+	}
 	if (!tp_sched_fork) {
 		pr_err("tracepoint sched_process_fork not found\n");
 		ret = -ENOENT;
 		goto err;
 	}
-
-	for_each_kernel_tracepoint(tp_lookup_cb, "sched_process_exit");
 	if (!tp_sched_exit) {
 		pr_err("tracepoint sched_process_exit not found\n");
 		ret = -ENOENT;
@@ -139,11 +164,19 @@ static int __init pacct_energy_init(void) //Start of the module
 	}
 
 	// Register the functions to be called on the trace points
+	ret = tracepoint_probe_register(tp_sched_switch,
+					(void *)pacct_sched_switch, NULL);
+	if (ret) {
+		pr_err("tracepoint_probe_register for switch failed: %d\n",
+		       ret);
+		goto err;
+	}
+
 	ret = tracepoint_probe_register(tp_sched_fork,
 					(void *)pacct_process_fork, NULL);
 	if (ret) {
 		pr_err("tracepoint_probe_register for fork failed: %d\n", ret);
-		goto err;
+		goto err_tp_sched_switch;
 	}
 
 	ret = tracepoint_probe_register(tp_sched_exit,
@@ -164,9 +197,11 @@ static int __init pacct_energy_init(void) //Start of the module
 	return 0;
 
 err_tp_sched_fork:
-	if (tp_sched_fork)
-		tracepoint_probe_unregister(tp_sched_fork,
-					    (void *)pacct_process_fork, NULL);
+	tracepoint_probe_unregister(tp_sched_fork, (void *)pacct_process_fork,
+				    NULL);
+err_tp_sched_switch:
+	tracepoint_probe_unregister(tp_sched_switch, (void *)pacct_sched_switch,
+				    NULL);
 	// Clean up any traced tasks that might have been created before the failure
 	clean_traced_task();
 err:
@@ -178,6 +213,9 @@ static void __exit pacct_energy_exit(void)
 	// Stop the energy estimator work by first
 	pacct_stop_energy_estimator();
 
+	if (tp_sched_switch)
+		tracepoint_probe_unregister(tp_sched_switch,
+					    (void *)pacct_sched_switch, NULL);
 	if (tp_sched_fork)
 		tracepoint_probe_unregister(tp_sched_fork,
 					    (void *)pacct_process_fork, NULL);
