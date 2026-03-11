@@ -28,6 +28,9 @@ spinlock_t traced_tasks_lock;
 // RAPL things
 u64 last_pkg_raw, last_ns;
 
+// Global statistics
+struct stats global_stats = {};
+
 static void pacct_process_fork(void *ignore, struct task_struct *parent,
 			       struct task_struct *child)
 {

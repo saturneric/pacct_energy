@@ -86,13 +86,13 @@ struct traced_task {
 	struct proc_dir_entry *process_dir; // Associated file under proc
 };
 
-static struct {
+extern struct stats {
 	s64 counter[PACCT_TRACED_EVENT_COUNT];
 	s64 energy;
 	s64 power;
 	s64 energy_rapl;
 	s64 power_rapl;
-} global_stats = {};
+} global_stats;
 
 struct traced_task *new_traced_task(pid_t pid);
 void release_traced_task(struct kref *kref);
