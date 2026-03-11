@@ -393,6 +393,8 @@ static void pacct_gather_total_stats_workfn(struct work_struct *work)
 			sum_power, rapl_power_mW);
 	}
 
+	//print_stats(&global_stats);
+
 	// simple power capping control based on the sampled package power
 	if (enable_power_cap)
 		pacct_powercap_control_step(rapl_power_mW);
