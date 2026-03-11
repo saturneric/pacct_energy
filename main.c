@@ -30,6 +30,7 @@ u64 last_pkg_raw, last_ns;
 
 // Global statistics
 struct stats global_stats = {};
+DEFINE_SEQLOCK(global_stats_lock); // For consistent reads via proc filesystem
 
 static void pacct_process_fork(void *ignore, struct task_struct *parent,
 			       struct task_struct *child)

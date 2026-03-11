@@ -5,6 +5,7 @@
 #include <linux/types.h>
 #include <linux/workqueue.h>
 #include <linux/proc_fs.h>
+#include <linux/seqlock.h>
 
 #define COUNTER_SCALE 100000000 //For fixed point arithmetic
 #define SCALE_COUNTER(counter) ((s64)((double)COUNTER_SCALE * (counter)))
@@ -93,6 +94,10 @@ extern struct stats {
 	s64 energy_rapl;
 	s64 power_rapl;
 } global_stats;
+
+extern seqlock_t global_stats_lock; // Ensure consistent reads via proc filesystem
+
+void print_stats(struct stats *s);
 
 struct traced_task *new_traced_task(pid_t pid);
 void release_traced_task(struct kref *kref);

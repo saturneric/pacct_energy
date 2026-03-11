@@ -7,21 +7,19 @@ process and estimates the energy consumption of processes when they exit.
 
 What's done in this project:
 1. Register trace hooks for process fork and exit events to track the lifecycle
-   of processes.
-2. Currently, we trace all the processes in the system. 
-3. Setup performance counters to monitor specific perf events of the traded
+   of processes and allocate `traced_task` structs.
+2. Currently, we trace all the processes (except kernel threads) in the system. 
+3. Setup performance counters via perf to monitor events of the traced
    processes later in a work queue. The events being monitored can be found in
    the header file `pacct_energy.h`.
-4. When the context switch out, it will read the performance counter values,
-   calculate the diff and store them in the `traced_task` structure.
-5. Calculate the energy estimation for each traced process in background, based
-   on the counter values and predefined coefficients. It's now done in a period
-   of 1 ms.
-6. Print the energy estimation for each process when it exits, along with the
-   event counts. The related `traced_task` structure will be removed and freed
-   carefully after the process exits.
+4. In the work queue two things are done periodically:
+   1. Get the performance counters for perf and estimate the energy using a linear model. Calculate the power of the process via the estimated energy and time passed.
+   2. Aggregate the stats (energy, power, counters) for all processes and store them together with analog measurements using rapl as global stats
+5. Expose the stats of each process and the global stats via the proc filesystem
+6. TODO: Explain powercapping
 
 ## Context
+Is this deprecated? We should no longer require the modified kernel. (TODO: Ensure we no longer use the modified kernel)
 
 This module should use a modified kernel version that export the symbol
 `pref_event_read_local()` to read performance counter values in the kernel
@@ -66,7 +64,26 @@ will compile the `pacct_energy.ko` kernel module.
 Just run `./run.sh` to test the kernel module. It will load the module, run a
 CPU stress test to generate some events, and then remove the module. In the end,
 it will also print the tail of the kernel log (`dmesg | tail -256`), which
-contains the output from the kernel module.
+contains debug output from the kernel module.
+
+## Output
+The following values are exposed in `/proc/pacct_energy`:
+
+### Global Statistics (`/proc/pacct_energy/global_stats/`)
+- `snapshot` - JSON formatted snapshot of all global statistics
+- `energy_uj` - Total estimated energy consumption across all processes (microjoules)
+- `energy_rapl_uj` - Total energy measured via RAPL (Running Average Power Limit) interface (microjoules)
+- `power_mW` - Current estimated power consumption across all processes (milliwatts)
+- `power_rapl_mW` - Current power measured via RAPL (milliwatts)
+- `rxxyy` -  The  total value, summed over all processes, of the performance counter with umask xx and event code yy
+
+### Per-Process Statistics (`/proc/pacct_energy/<PID>/`)
+Each running process has a directory (named by its PID) containing:
+- `energy_uj` - Estimated energy consumption of this process (microjoules)
+- `power_mW` - Current estimated power consumption of this process (milliwatts)
+- `rxxyy` - Individual performance counter values with umask xx and event code yy
+
+All counter values represent cumulative counts since the module was loaded or the process started.
 
 ## Caution
 

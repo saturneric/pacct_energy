@@ -302,6 +302,7 @@ static int rapl_read_pkg_energy_uj_on_cpu(int cpu, u64 *uj)
 
 
 //Calculate the power and energy measured via rapl
+// Returns 0 on success, 1 on failure
 static int sample_pkg_power(u64 *power_mW, u64 *energy_uj)
 {
 	// u64 raw = read_event_count(evt_cores);
@@ -323,7 +324,7 @@ static int sample_pkg_power(u64 *power_mW, u64 *energy_uj)
 		return 1;
 	}
 
-	pr_info("RAPL raw energy: %llu (uJ)\n", *energy_uj);
+	//pr_info("RAPL raw energy: %llu (uJ)\n", *energy_uj);
 
 	if (last_pkg_raw == 0) { //First time this function was called
 		last_pkg_raw = *energy_uj;
@@ -378,20 +379,24 @@ static void pacct_gather_total_stats_workfn(struct work_struct *work)
 	}
 	spin_unlock(&traced_tasks_lock);
 
+	u64 rapl_power_mW;  //measured using rapl in mW
+	u64 rapl_energy_uj; //measured using rapl in uJ
+	if (unlikely(sample_pkg_power(&rapl_power_mW, &rapl_energy_uj))) {
+		pr_err("Failed to sample package power and energy via RAPL\n");
+		rapl_power_mW = 0;
+		rapl_energy_uj = 0;
+	}
+
+	// Update global_stats atomically using seqlock
+	write_seqlock(&global_stats_lock);
 	global_stats.energy = sum_energy;
 	global_stats.power = sum_power;
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 		global_stats.counter[i] = sum_counter[i];
 	}
-
-	u64 rapl_power_mW;  //measured using rapl in mW
-	u64 rapl_energy_uj; //measured using rapl in uJ
-	if (!sample_pkg_power(&rapl_power_mW, &rapl_energy_uj)) {
-		global_stats.power_rapl = rapl_power_mW;
-		global_stats.energy_rapl = rapl_energy_uj;
-		pr_info("Power: estimated power: %lld mW, pkg power: %llu mW\n",
-			sum_power, rapl_power_mW);
-	}
+	global_stats.power_rapl = rapl_power_mW;
+	global_stats.energy_rapl = rapl_energy_uj;
+	write_sequnlock(&global_stats_lock);
 
 	//print_stats(&global_stats);
 
