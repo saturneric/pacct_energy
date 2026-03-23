@@ -28,6 +28,14 @@ struct traced_task *new_traced_task(pid_t pid)
 	entry->energy_uj = 0;
 	entry->power_mW = 0;
 	entry->comm[0] = '\0';
+
+	// Initialize ITD related fields
+	entry->itd_classid = 0;
+	entry->itd_sample_count = 0;
+	for (int i = 0; i < PACCT_ITD_MAX_CLASSES; i++) {
+		entry->itd_classid_count[i] = 0;
+	}
+
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 		entry->event[i] = NULL;
 	}
@@ -98,7 +106,8 @@ int setup_traced_task(struct traced_task *entry)
 	int ret;
 	kref_get(&entry->ref_count);
 
-	entry->better_timestamp_ns = ktime_get_ns(); // Set first timestamp for begin of power calculation
+	entry->better_timestamp_ns =
+		ktime_get_ns(); // Set first timestamp for begin of power calculation
 
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 		if (entry->event[i] && !IS_ERR(entry->event[i]))

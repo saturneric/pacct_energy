@@ -71,12 +71,18 @@ static void pacct_process_exit(void *ignore, struct task_struct *p)
 	// remove from traced_tasks
 	spin_lock(&traced_tasks_lock);
 	list_del_init(&e->list);
-	
+
 	// add to retiring_traced_tasks for cleanup
 	list_add_tail(&e->retire_node, &retiring_traced_tasks);
 
 	spin_unlock(&traced_tasks_lock);
-	
+
+	pr_info("Process exiting: PID %d, COMM %s, ITD Class ID: %llu, Sample Count: %llu, Dist: [%llu, %llu, %llu, %llu, %llu]\n",
+		p->pid, p->comm, e->itd_classid, e->itd_sample_count,
+		e->itd_classid_count[0], e->itd_classid_count[1],
+		e->itd_classid_count[2], e->itd_classid_count[3],
+		e->itd_classid_count[4]);
+
 	// we'd got a ref from get_traced_task()
 	kref_put(&e->ref_count, release_traced_task);
 }
@@ -162,6 +168,9 @@ static int __init pacct_energy_init(void) //Start of the module
 	// Schedule a delayed work to scan existing tasks and create traced_task entries for them
 	queue_pacct_scan_tasks();
 
+	// Initialize ITD related things
+	pacct_init_itd();
+
 	return 0;
 
 err_tp_sched_fork:
@@ -176,6 +185,9 @@ err:
 
 static void __exit pacct_energy_exit(void)
 {
+	// Clean up ITD related things
+	pacct_exit_itd();
+
 	// Stop the energy estimator work by first
 	pacct_stop_energy_estimator();
 
