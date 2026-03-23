@@ -70,7 +70,7 @@ void pacct_sample_current_itd(void)
 	int ret;
 
 	e = get_or_create_traced_task(current->pid, NULL, false);
-	if (!e)
+	if (!e || e->retiring)
 		return;
 
 	ret = intel_hfi_read_classid(&classid);
