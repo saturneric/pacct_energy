@@ -67,7 +67,6 @@ static void pacct_scan_tasks_workfn(struct work_struct *work)
 	queue_pacct_setup_work();
 }
 
-
 //pick an element of traced_tasks, which is not set up yet
 static bool pick_one_not_ready_candidate(struct traced_task **out)
 {
@@ -99,13 +98,12 @@ static void pacct_setup_workfn(struct work_struct *work)
 		if (!pick_one_not_ready_candidate(&e))
 			break;
 		int ret = setup_traced_task(e);
-		if (unlikely(ret != 0))
-		{
+		if (unlikely(ret != 0)) {
 			pr_alert("Failed to set up task. Trying again later");
 		} else {
-			WRITE_ONCE(e->ready,  1);
+			WRITE_ONCE(e->ready, 1);
 		}
-		
+
 		kref_put(&e->ref_count, release_traced_task);
 
 		cond_resched();
@@ -138,7 +136,7 @@ static void pacct_retire_workfn(struct work_struct *work)
 				     retire_node);
 		list_del_init(&e->retire_node);
 		spin_unlock(&traced_tasks_lock);
-		
+
 		if (kref_put(&e->ref_count, release_traced_task)) {
 			pr_warn("Traced task was not released during retiring: refcount != 0");
 		}
@@ -154,8 +152,6 @@ void queue_pacct_retire_work(void)
 	queue_work(system_unbound_wq, &pacct_retire_work);
 }
 
-
-
 static DECLARE_DELAYED_WORK(pacct_scan_tasks_work, pacct_scan_tasks_workfn);
 
 void queue_pacct_scan_tasks(void)
@@ -168,21 +164,21 @@ void queue_pacct_scan_tasks(void)
 // Estimate the energy from the counters via the model and calculate the power for a traced task
 static __inline__ void pacct_estimate_traced_task_energy(struct traced_task *e)
 {
-
 	s64 energy_uj = 0;
-	
+
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 		struct perf_event *ev = READ_ONCE(e->event[i]);
 		if (ev && !IS_ERR(ev)) {
 			u64 counter = read_event_count_sleepable(ev);
-			e->counts[i] = (s64) counter; // Buffer for proc filesystem
-			
+			e->counts[i] =
+				(s64)counter; // Buffer for proc filesystem
+
 			// pr_info("PID %d(%s), Event %d: counter=%llu, coeff=%lld\n",
 			// 	e->pid, e->comm, i, counter, tracked_events[i].coeff);
-			
+
 			// do energy_uj += (s64) counter * tracked_events[i].coeff with overflow checking
 			if (counter > S64_MAX)
-			pr_warn("casting overflow for event %d", i);
+				pr_warn("casting overflow for event %d", i);
 			s64 energy_single_uj;
 			if (check_mul_overflow((s64)counter,
 					       tracked_events[i].coeff,
@@ -267,7 +263,6 @@ static void pacct_energy_estimate_workfn(struct work_struct *work)
 static DECLARE_DELAYED_WORK(pacct_energy_estimate_work,
 			    pacct_energy_estimate_workfn);
 
-
 // ------- Gather stats of all traced tasks and compare with rapl -------
 
 static u32 rapl_eu_shift; // energy unit shift
@@ -299,7 +294,6 @@ static int rapl_read_pkg_energy_uj_on_cpu(int cpu, u64 *uj)
 	*uj = (u64)tmp;
 	return 0;
 }
-
 
 //Calculate the power and energy measured via rapl
 // Returns 0 on success, 1 on failure
@@ -357,7 +351,7 @@ static void pacct_gather_total_stats_workfn(struct work_struct *work)
 	struct traced_task *n;
 
 	//Summed values
-	s64 sum_counter[PACCT_TRACED_EVENT_COUNT] = {0};
+	s64 sum_counter[PACCT_TRACED_EVENT_COUNT] = { 0 };
 	s64 sum_energy = 0;
 	s64 sum_power = 0;
 
@@ -370,7 +364,7 @@ static void pacct_gather_total_stats_workfn(struct work_struct *work)
 			continue;
 		}
 		spin_unlock(&traced_tasks_lock);
-		
+
 		for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 			sum_counter[i] += e->counts[i];
 		}
@@ -382,7 +376,7 @@ static void pacct_gather_total_stats_workfn(struct work_struct *work)
 	}
 	spin_unlock(&traced_tasks_lock);
 
-	u64 rapl_power_mW;  //measured using rapl in mW
+	u64 rapl_power_mW; //measured using rapl in mW
 	u64 rapl_energy_uj; //measured using rapl in uJ
 	if (unlikely(sample_pkg_power(&rapl_power_mW, &rapl_energy_uj))) {
 		rapl_power_mW = 0;
