@@ -67,9 +67,9 @@ void print_stats(struct stats *s)
 {
 	pr_info("=== Global Statistics ===\n");
 	pr_info("Energy (estimated): %lld uJ\n", s->energy);
+	pr_info("Energy (RAPL)     : %lld uJ\n", s->energy_rapl);
 	pr_info("Power (estimated): %lld mW\n", s->power);
-	pr_info("Energy (RAPL): %lld uJ\n", s->energy_rapl);
-	pr_info("Power (RAPL): %lld mW\n", s->power_rapl);
+	pr_info("Power (RAPL)     : %lld mW\n", s->power_rapl);
 	pr_info("Counters:\n");
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 		pr_info("  r%02x%02x: %lld\n", 

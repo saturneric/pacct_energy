@@ -19,7 +19,7 @@
 extern struct list_head traced_tasks;
 extern struct list_head retiring_traced_tasks;
 extern spinlock_t traced_tasks_lock;
-extern u64 last_pkg_raw, last_ns;
+extern u64 last_pkg_raw, first_pkg_raw, last_ns;
 
 static atomic_t estimator_enabled = ATOMIC_INIT(0);
 
@@ -326,8 +326,11 @@ static int sample_pkg_power(u64 *power_mW, u64 *energy_uj)
 
 	//pr_info("RAPL raw energy: %llu (uJ)\n", *energy_uj);
 
-	if (last_pkg_raw == 0) { //First time this function was called
-		last_pkg_raw = *energy_uj;
+	*energy_uj = *energy_uj - first_pkg_raw; // Return energy since the first measurement for better comparison with our estimation
+	if (first_pkg_raw == 0) { //First time this function was called
+		first_pkg_raw = *energy_uj;
+		last_pkg_raw = 0;
+		*energy_uj = 0;
 		last_ns = now;
 		return 1;
 	}
@@ -382,7 +385,6 @@ static void pacct_gather_total_stats_workfn(struct work_struct *work)
 	u64 rapl_power_mW;  //measured using rapl in mW
 	u64 rapl_energy_uj; //measured using rapl in uJ
 	if (unlikely(sample_pkg_power(&rapl_power_mW, &rapl_energy_uj))) {
-		pr_err("Failed to sample package power and energy via RAPL\n");
 		rapl_power_mW = 0;
 		rapl_energy_uj = 0;
 	}
@@ -398,7 +400,7 @@ static void pacct_gather_total_stats_workfn(struct work_struct *work)
 	global_stats.energy_rapl = rapl_energy_uj;
 	write_sequnlock(&global_stats_lock);
 
-	//print_stats(&global_stats);
+	print_stats(&global_stats);
 
 	// simple power capping control based on the sampled package power
 	if (enable_power_cap)
