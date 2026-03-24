@@ -5,7 +5,10 @@
 
 #define MSR_IA32_HW_FEEDBACK_CHAR 0x17d2
 
-#define PACCT_ITD_SAMPLE_INTERVAL_MS 1
+#define PACCT_ITD_SAMPLE_INTERVAL_MS 10
+#define PACCT_ITD_SAMPLE_POST_WORKS_PERIOD_MS 100
+
+static atomic_t sampling_enabled = ATOMIC_INIT(0);
 
 union hfi_thread_feedback_char_msr {
 	struct {
@@ -31,6 +34,9 @@ union cpuid6_ecx {
 
 // Number of ITD classes supported by the CPU, read from CPUID
 static u64 n_itd_classes;
+
+extern struct list_head traced_tasks;
+extern spinlock_t traced_tasks_lock;
 
 static DEFINE_PER_CPU(struct pacct_cpu_sampler, pacct_samplers);
 
@@ -69,7 +75,7 @@ void pacct_sample_current_itd(void)
 	u8 classid;
 	int ret;
 
-	e = get_or_create_traced_task(current->pid, NULL, false);
+	e = get_traced_task(current->pid);
 	if (!e || e->retiring)
 		return;
 
@@ -82,31 +88,6 @@ void pacct_sample_current_itd(void)
 	}
 
 	e->itd_sample_count++;
-
-	// After enough samples, determine the most common classid for this task and
-	// use that as the classid for the task. This is to reduce the noise in
-	// classification and get a more stable classid for each task
-	if (e->itd_sample_count % 100 == 0) {
-		u64 max_count = 0;
-		u64 max_classid = 0;
-		for (int i = 0; i < n_itd_classes; i++) {
-			if (e->itd_classid_count[i] > max_count) {
-				max_count = e->itd_classid_count[i];
-				max_classid = i;
-			}
-			e->itd_classid_count[i] = 0;
-		}
-		e->itd_classid = max_classid;
-	}
-
-	// Reset the sample count to avoid overflow and to allow the classid to be
-	// updated over time if the task's behavior changes
-	if (e->itd_sample_count > 1000) {
-		e->itd_sample_count = 0;
-		for (int i = 0; i < n_itd_classes; i++) {
-			e->itd_classid_count[i] = 0;
-		}
-	}
 
 	kref_put(&e->ref_count, release_traced_task);
 }
@@ -121,7 +102,7 @@ static enum hrtimer_restart pacct_sample_timer_fn(struct hrtimer *timer)
 	return HRTIMER_RESTART;
 }
 
-static void pacct_start_sampler_cpu(void *info)
+static void pacct_start_sampling_per_cpu(void *info)
 {
 	struct pacct_cpu_sampler *s = this_cpu_ptr(&pacct_samplers);
 
@@ -131,10 +112,86 @@ static void pacct_start_sampler_cpu(void *info)
 		      HRTIMER_MODE_REL_PINNED);
 }
 
-static void pacct_stop_sampler_cpu(void *info)
+static void pacct_stop_sampling_per_cpu(void *info)
 {
 	struct pacct_cpu_sampler *s = this_cpu_ptr(&pacct_samplers);
 	hrtimer_cancel(&s->timer);
+}
+
+static void pacct_itd_sampling_post_work_workfn(struct work_struct *work)
+{
+	struct delayed_work *dwork =
+		container_of(work, struct delayed_work, work);
+
+	struct traced_task *e, *n;
+
+	spin_lock(&traced_tasks_lock);
+	list_for_each_entry_safe(e, n, &traced_tasks, list) {
+		kref_get(&e->ref_count);
+
+		if (!READ_ONCE(e->ready) || READ_ONCE(e->retiring)) {
+			kref_put(&e->ref_count, release_traced_task);
+			continue;
+		}
+
+		spin_unlock(&traced_tasks_lock);
+
+		u64 max_count = 0;
+		u64 max_classid = 0;
+		for (int i = 0; i < n_itd_classes; i++) {
+			if (e->itd_classid_count[i] > max_count) {
+				max_count = e->itd_classid_count[i];
+				max_classid = i;
+			}
+		}
+		e->itd_classid = max_classid;
+
+		// Reset the sample count to avoid overflow and to allow the classid to be
+		// updated over time if the task's behavior changes
+		if (e->itd_sample_count > 100) {
+			e->itd_sample_count = 0;
+			for (int i = 0; i < n_itd_classes; i++) {
+				e->itd_classid_count[i] = 0;
+			}
+		}
+
+		kref_put(&e->ref_count, release_traced_task);
+
+		spin_lock(&traced_tasks_lock);
+	}
+	spin_unlock(&traced_tasks_lock);
+
+	if (atomic_read(&sampling_enabled))
+		schedule_delayed_work(
+			dwork, msecs_to_jiffies(
+				       PACCT_ITD_SAMPLE_POST_WORKS_PERIOD_MS));
+}
+
+static DECLARE_DELAYED_WORK(pacct_itd_sampling_post_work,
+			    pacct_itd_sampling_post_work_workfn);
+
+static void pacct_start_itd_sampling(void)
+{
+	// Start the periodic sampling of ITD classid for the current task on each CPU
+	on_each_cpu(pacct_start_sampling_per_cpu, NULL, 1);
+
+	if (atomic_xchg(&sampling_enabled,
+			1)) //Ensure sampling is only activated once
+		return;
+
+	schedule_delayed_work(
+		&pacct_itd_sampling_post_work,
+		msecs_to_jiffies(PACCT_ITD_SAMPLE_POST_WORKS_PERIOD_MS));
+}
+
+static void pacct_stop_itd_sampling(void)
+{
+	// Stop the periodic sampling of ITD classid for the current task on each CPU
+	on_each_cpu(pacct_stop_sampling_per_cpu, NULL, 1);
+
+	// Stop the post-processing work
+	atomic_set(&sampling_enabled, 0);
+	cancel_delayed_work_sync(&pacct_itd_sampling_post_work);
 }
 
 static void pacct_enable_itd_per_cpu(void *ignore)
@@ -176,11 +233,10 @@ void pacct_init_itd()
 
 	pr_info("cpu supports %llu ITD classes\n", n_itd_classes);
 
-	// Start the periodic sampling of ITD classid for the current task on each CPU
-	on_each_cpu(pacct_start_sampler_cpu, NULL, 1);
+	pacct_start_itd_sampling();
 }
 
 void pacct_exit_itd()
 {
-	on_each_cpu(pacct_stop_sampler_cpu, NULL, 1);
+	pacct_stop_itd_sampling();
 }

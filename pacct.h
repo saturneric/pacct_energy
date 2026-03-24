@@ -137,6 +137,7 @@ void release_traced_task(struct kref *kref);
 int setup_traced_task(struct traced_task *entry);
 struct traced_task *get_or_create_traced_task(pid_t pid, const char *comm,
 					      bool create);
+struct traced_task *get_traced_task(pid_t pid);
 
 void queue_pacct_setup_work(void);
 void queue_pacct_retire_work(void);

@@ -172,3 +172,8 @@ err:
 	spin_unlock(&traced_tasks_lock);
 	return entry;
 }
+
+struct traced_task *get_traced_task(pid_t pid)
+{
+	return get_or_create_traced_task(pid, NULL, false);
+}
