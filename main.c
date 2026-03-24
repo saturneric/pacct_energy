@@ -8,6 +8,7 @@
 
 #include "pacct.h"
 #include "proc.h"
+#include "cpu-class.h"
 
 MODULE_AUTHOR("pm3");
 MODULE_DESCRIPTION("Process Energy Accounting Module");
@@ -132,6 +133,13 @@ static int __init pacct_energy_init(void) //Start of the module
 	int ret;
 
 	pr_info("pacct_energy init\n");
+
+	// Classify CPUs
+	ret = pacct_cpu_class_init();
+	if (ret) {
+		pr_err("could not initialize CPU classes\n");
+		goto err;
+	}
 
 	// Initialize the list of traced tasks and the lock
 	spin_lock_init(&traced_tasks_lock);
