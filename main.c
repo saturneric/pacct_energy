@@ -127,8 +127,11 @@ static void pacct_sched_switch(void *ignore, bool preempt,
 			       struct task_struct *prev,
 			       struct task_struct *next)
 {
-	pacct_sched_switch_prev(prev);
-	pacct_sched_switch_next(next);
+	// Don't trace kernel threads
+	if (!(prev->flags & PF_KTHREAD))
+		pacct_sched_switch_prev(prev);
+	if (!(next->flags & PF_KTHREAD))
+		pacct_sched_switch_next(next);
 }
 
 static void pacct_process_fork(void *ignore, struct task_struct *parent,
@@ -158,6 +161,9 @@ static void pacct_process_fork(void *ignore, struct task_struct *parent,
 //move task from traced_tasks to retiring_traced_tasks
 static void pacct_process_exit(void *ignore, struct task_struct *p)
 {
+	// Don't trace kernel threads
+	if (p->flags & PF_KTHREAD)
+		return;
 	struct traced_task *e = get_or_create_traced_task(p->pid, NULL, false);
 	if (!e)
 		return;

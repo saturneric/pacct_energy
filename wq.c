@@ -11,6 +11,7 @@
 #include <linux/overflow.h>
 
 #include "pacct.h"
+#include "errors.h"
 
 #define PACCT_SETUP_BUDGET 32
 #define ENERGY_ESTIMATE_PERIOD_MS 30
@@ -340,6 +341,9 @@ static void pacct_gather_total_stats_workfn(struct work_struct *work)
 	// simple power capping control based on the sampled package power
 	if (enable_power_cap)
 		pacct_powercap_control_step(rapl_power_mW);
+
+	// TODO this is here only for testing
+	pacct_error_report();
 
 	if (atomic_read(&estimator_enabled))
 		schedule_delayed_work(
