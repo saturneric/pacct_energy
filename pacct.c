@@ -276,8 +276,11 @@ int calculate_model(const struct periodic_data *pd, u64 *restrict energy_uj_out,
 	}
 	CHECKED_MUL(&acc, energy_uj, 1000000LL);
 	s64 power_wallclock_mW = div64_s64(acc, time_diff);
-	s64 power_cpu_mW = div64_s64(
-		acc, (s64)(pd->time_efficiency_ns + pd->time_performance_ns));
+	s64 time_on_cpu = pd->time_efficiency_ns + pd->time_performance_ns;
+	s64 power_cpu_mW = 0;
+	if (time_on_cpu > 0) {
+		power_cpu_mW = div64_s64(acc, time_on_cpu);
+	}
 	*energy_uj_out = energy_uj;
 	*power_wallclock_mW_out = power_wallclock_mW;
 	*power_cpu_mW_out = power_cpu_mW;
