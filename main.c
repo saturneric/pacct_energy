@@ -39,16 +39,16 @@ static int pacct_sched_switch_prev(struct task_struct *prev)
 {
 	struct traced_task *t_prev =
 		get_or_create_traced_task(prev->pid, NULL, false);
-	if (t_prev == NULL) {
-		pacct_errors.sched_switch_prev_no_traced_task++;
+	if (PACCT_ERROR_TRACE(sched_switch_prev_no_traced_task,
+			      t_prev == NULL)) {
 		return -1;
 	}
-	if (!READ_ONCE(t_prev->ready)) {
-		pacct_errors.sched_switch_prev_not_ready++;
+	if (PACCT_ERROR_TRACE(sched_switch_prev_not_ready,
+			      !READ_ONCE(t_prev->ready))) {
 		goto err;
 	}
-	if (!t_prev->running) {
-		pacct_errors.sched_switch_prev_not_running++;
+	if (PACCT_ERROR_TRACE(sched_switch_prev_not_running,
+			      !t_prev->running)) {
 		goto err;
 	}
 
@@ -58,8 +58,8 @@ static int pacct_sched_switch_prev(struct task_struct *prev)
 		// TODO verify that this method does the correc thing
 		s64 diff = (s64)read_event_count(t_prev->event[i]) -
 			   (s64)t_prev->counter_start[i];
-		if (diff < 0) {
-			pacct_errors.sched_switch_prev_counter_got_smaller++;
+		if (PACCT_ERROR_TRACE(sched_switch_prev_counter_got_smaller,
+				      diff < 0)) {
 			diff = 0; // TODO ?
 		}
 		counter_diff[i] = (u64)diff;
@@ -69,8 +69,8 @@ static int pacct_sched_switch_prev(struct task_struct *prev)
 	// accumulate
 	unsigned long flags;
 	spin_lock_irqsave(&t_prev->periodic_lock, flags);
-	if (class == PACCT_CPU_CLASS_NONE) {
-		pacct_errors.sched_switch_prev_invalid_cpu_class++;
+	if (PACCT_ERROR_TRACE(sched_switch_prev_invalid_cpu_class,
+			      class == PACCT_CPU_CLASS_NONE)) {
 	} else if (class == PACCT_CPU_CLASS_EFFICIENCY) {
 		t_prev->periodic_data.time_efficiency_ns += time_diff;
 		for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
@@ -98,16 +98,16 @@ static int pacct_sched_switch_next(struct task_struct *next)
 {
 	struct traced_task *t_next =
 		get_or_create_traced_task(next->pid, NULL, false);
-	if (t_next == NULL) {
-		pacct_errors.sched_switch_next_no_traced_task++;
+	if (PACCT_ERROR_TRACE(sched_switch_next_no_traced_task,
+			      t_next == NULL)) {
 		return -1;
 	}
-	if (!READ_ONCE(t_next->ready)) {
-		pacct_errors.sched_switch_next_not_ready++;
+	if (PACCT_ERROR_TRACE(sched_switch_next_not_ready,
+			      !READ_ONCE(t_next->ready))) {
 		goto err;
 	}
-	if (t_next->running) {
-		pacct_errors.sched_switch_next_already_running++;
+	if (PACCT_ERROR_TRACE(sched_switch_next_already_running,
+			      t_next->running)) {
 		goto err;
 	}
 

@@ -227,20 +227,20 @@ err:
 	return entry;
 }
 
-#define CHECKED_ADD(res, a, b)                             \
-	do {                                               \
-		if (check_add_overflow(a, b, res)) {       \
-			pacct_errors.model_overflow_add++; \
-			goto overflow;                     \
-		}                                          \
+#define CHECKED_ADD(res, a, b)                                          \
+	do {                                                            \
+		if (PACCT_ERROR_TRACE(model_overflow_add,               \
+				      check_add_overflow(a, b, res))) { \
+			goto overflow;                                  \
+		}                                                       \
 	} while (0)
 
-#define CHECKED_MUL(res, a, b)                             \
-	do {                                               \
-		if (check_mul_overflow(a, b, res)) {       \
-			pacct_errors.model_overflow_mul++; \
-			goto overflow;                     \
-		}                                          \
+#define CHECKED_MUL(res, a, b)                                          \
+	do {                                                            \
+		if (PACCT_ERROR_TRACE(model_overflow_mul,               \
+				      check_mul_overflow(a, b, res))) { \
+			goto overflow;                                  \
+		}                                                       \
 	} while (0)
 
 // calculates model energy and power in timeframe given in `periodic_data`.
@@ -252,8 +252,7 @@ int calculate_model(const struct periodic_data *pd, u64 *restrict energy_uj_out,
 	s64 acc_performance = 0;
 
 	s64 time_diff = (s64)ktime_get_ns() - (s64)pd->time_start_ns;
-	if (time_diff <= 0) {
-		pacct_errors.model_bad_time++;
+	if (PACCT_ERROR_TRACE(model_bad_time, time_diff <= 0)) {
 		goto overflow;
 	}
 
@@ -270,13 +269,10 @@ int calculate_model(const struct periodic_data *pd, u64 *restrict energy_uj_out,
 	s64 acc;
 	CHECKED_ADD(&acc, acc_efficiency, acc_performance);
 	s64 energy_uj = acc / COUNTER_SCALE;
-	if (energy_uj < 0) {
-		pacct_errors.model_negative_energy++;
+	PACCT_ERROR_TRACE(model_zero_energy, energy_uj == 0);
+	if (PACCT_ERROR_TRACE(model_negative_energy, energy_uj < 0)) {
 		// TODO better way?
 		energy_uj = 0;
-	} else if (energy_uj == 0) {
-		pacct_errors
-			.model_zero_energy++; // not an error but good to know
 	}
 	CHECKED_MUL(&acc, energy_uj, 1000000LL);
 	s64 power_wallclock_mW = div64_s64(acc, time_diff);
@@ -294,32 +290,23 @@ overflow:
 	return -1;
 }
 
+#define PACCT_ERROR_TRANSFORM(name)                                      \
+	pr_info("  " #name " = %llu/%llu\n", pacct_errors.name.positive, \
+		pacct_errors.name.positive + pacct_errors.name.negative);
 void pacct_error_report(void)
 {
 	pr_info("pacct_errors {\n");
-	pr_info("  model_bad_time = %llu\n", pacct_errors.model_bad_time);
-	pr_info("  model_overflow_mul = %llu\n",
-		pacct_errors.model_overflow_mul);
-	pr_info("  model_overflow_add = %llu\n",
-		pacct_errors.model_overflow_add);
-	pr_info("  model_negative_energy = %llu\n",
-		pacct_errors.model_negative_energy);
-	pr_info("  model_zero_energy = %llu\n", pacct_errors.model_zero_energy);
-	pr_info("  sched_switch_prev_no_traced_task = %llu\n",
-		pacct_errors.sched_switch_prev_no_traced_task);
-	pr_info("  sched_switch_prev_not_ready = %llu\n",
-		pacct_errors.sched_switch_prev_not_ready);
-	pr_info("  sched_switch_prev_not_running = %llu\n",
-		pacct_errors.sched_switch_prev_not_running);
-	pr_info("  sched_switch_prev_invalid_cpu_class = %llu\n",
-		pacct_errors.sched_switch_prev_invalid_cpu_class);
-	pr_info("  sched_switch_prev_counter_got_smaller = %llu\n",
-		pacct_errors.sched_switch_prev_counter_got_smaller);
-	pr_info("  sched_switch_next_no_traced_task = %llu\n",
-		pacct_errors.sched_switch_next_no_traced_task);
-	pr_info("  sched_switch_next_not_ready = %llu\n",
-		pacct_errors.sched_switch_next_not_ready);
-	pr_info("  sched_switch_next_already_running = %llu\n",
-		pacct_errors.sched_switch_next_already_running);
+	PACCT_ERRORS
 	pr_info("}\n");
+}
+#undef PACCT_ERROR_TRANSFORM
+
+int pacct_error_trace(struct pacct_error_trace *tr, int cond)
+{
+	if (cond) {
+		tr->positive++;
+	} else {
+		tr->negative++;
+	}
+	return cond;
 }
