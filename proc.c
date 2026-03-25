@@ -31,17 +31,6 @@ static const struct proc_ops ops = {
 	.proc_release = single_release,
 };
 
-
-static void create_counter_files(char *name_buffer, struct proc_dir_entry *dir, s64 *counters)
-{	
-	for (size_t i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
-		sprintf(name_buffer, "r%02x%02x", tracked_events[i].umask,
-			tracked_events[i].event_code);
-		proc_create_data(name_buffer, ACCESS_RIGHTS, dir, &ops,
-					&counters[i]);
-	}
-}
-
 static void setup_global_proc_file(void)
 {
 	struct proc_dir_entry *total_stats_dir =
@@ -55,8 +44,6 @@ static void setup_global_proc_file(void)
 			 &global_stats.energy);
 	proc_create_data("power_mW", ACCESS_RIGHTS, total_stats_dir, &ops,
 			 &global_stats.power);
-	char name_buffer[32];
-	create_counter_files(name_buffer, total_stats_dir, global_stats.counter);
 	proc_create_data("energy_rapl_uj", ACCESS_RIGHTS, total_stats_dir, &ops,
 			 &global_stats.energy_rapl);
 	proc_create_data("power_rapl_mW", ACCESS_RIGHTS, total_stats_dir, &ops,
@@ -73,10 +60,11 @@ void setup_proc_file(struct traced_task *entry)
 
 	// expose all the values we have
 	proc_create_data("energy_uj", ACCESS_RIGHTS, entry->process_dir, &ops,
-				&entry->energy_uj);
-	proc_create_data("power_mW", ACCESS_RIGHTS, entry->process_dir, &ops,
-				&entry->power_mW);
-	create_counter_files(name_buffer, entry->process_dir, entry->counts);
+			 &entry->energy_uj);
+	proc_create_data("power_wallclock_mW", ACCESS_RIGHTS,
+			 entry->process_dir, &ops, &entry->power_wallclock_mW);
+	proc_create_data("power_cpu_mW", ACCESS_RIGHTS, entry->process_dir,
+			 &ops, &entry->power_cpu_mW);
 }
 
 void freeProcFile(struct traced_task *entry)

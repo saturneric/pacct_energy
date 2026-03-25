@@ -9,6 +9,7 @@
 #include "pacct.h"
 #include "proc.h"
 #include "cpu-class.h"
+#include "errors.h"
 
 MODULE_AUTHOR("pm3");
 MODULE_DESCRIPTION("Process Energy Accounting Module");
@@ -33,26 +34,101 @@ u64 last_pkg_raw, last_ns;
 // Global statistics
 struct stats global_stats = {};
 
+// save stats for single run and accumulate
+static int pacct_sched_switch_prev(struct task_struct *prev)
+{
+	struct traced_task *t_prev =
+		get_or_create_traced_task(prev->pid, NULL, false);
+	if (t_prev == NULL) {
+		pacct_errors.sched_switch_prev_no_traced_task++;
+		return -1;
+	}
+	if (!READ_ONCE(t_prev->ready)) {
+		pacct_errors.sched_switch_prev_not_ready++;
+		goto err;
+	}
+	if (!t_prev->running) {
+		pacct_errors.sched_switch_prev_not_running++;
+		goto err;
+	}
+
+	u64 time_diff = ktime_get_ns() - t_prev->run_start_ns;
+	u64 counter_diff[PACCT_TRACED_EVENT_COUNT];
+	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
+		// TODO verify that this method does the correc thing
+		s64 diff = (s64)read_event_count(t_prev->event[i]) -
+			   (s64)t_prev->counter_start[i];
+		if (diff < 0) {
+			pacct_errors.sched_switch_prev_counter_got_smaller++;
+			diff = 0; // TODO ?
+		}
+		counter_diff[i] = (u64)diff;
+	}
+	// TODO verify that task_cpu returns the correct value even though we're not scheduled anymore
+	enum pacct_cpu_class class = pacct_cpu_class_get(task_cpu(prev));
+	// accumulate
+	unsigned long flags;
+	spin_lock_irqsave(&t_prev->periodic_lock, flags);
+	if (class == PACCT_CPU_CLASS_NONE) {
+		pacct_errors.sched_switch_prev_invalid_cpu_class++;
+	} else if (class == PACCT_CPU_CLASS_EFFICIENCY) {
+		t_prev->periodic_data.time_efficiency_ns += time_diff;
+		for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
+			t_prev->periodic_data.counter_diff_efficiency[i] +=
+				counter_diff[i];
+		}
+	} else {
+		t_prev->periodic_data.time_performance_ns += time_diff;
+		for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
+			t_prev->periodic_data.counter_diff_performance[i] +=
+				counter_diff[i];
+		}
+	}
+	spin_unlock_irqrestore(&t_prev->periodic_lock, flags);
+
+	WRITE_ONCE(t_prev->running, false);
+	return 0;
+err:
+	kref_put(&t_prev->ref_count, release_traced_task);
+	return -1;
+}
+
+// setup next running process with current timestamp and counter values
+static int pacct_sched_switch_next(struct task_struct *next)
+{
+	struct traced_task *t_next =
+		get_or_create_traced_task(next->pid, NULL, false);
+	if (t_next == NULL) {
+		pacct_errors.sched_switch_next_no_traced_task++;
+		return -1;
+	}
+	if (!READ_ONCE(t_next->ready)) {
+		pacct_errors.sched_switch_next_not_ready++;
+		goto err;
+	}
+	if (t_next->running) {
+		pacct_errors.sched_switch_next_already_running++;
+		goto err;
+	}
+
+	t_next->run_start_ns = ktime_get_ns();
+	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
+		t_next->counter_start[i] = read_event_count(t_next->event[i]);
+	}
+
+	WRITE_ONCE(t_next->running, true);
+	return 0;
+err:
+	kref_put(&t_next->ref_count, release_traced_task);
+	return -1;
+}
+
 static void pacct_sched_switch(void *ignore, bool preempt,
 			       struct task_struct *prev,
 			       struct task_struct *next)
 {
-	struct traced_task *e =
-		get_or_create_traced_task(prev->pid, NULL, false);
-	if (!e)
-		return;
-
-	if (!READ_ONCE(e->ready)) {
-		// TODO should we check that this doesn't happen too often?
-		goto out;
-	}
-
-	unsigned int cpu = task_cpu(prev);
-	// TODO	find out on which CPU type the task ran, get timestamp and save somewhere
-	// if the core type changed (?or is subject to change?), read counter values
-
-out:
-	kref_put(&e->ref_count, release_traced_task);
+	pacct_sched_switch_prev(prev);
+	pacct_sched_switch_next(next);
 }
 
 static void pacct_process_fork(void *ignore, struct task_struct *parent,
@@ -240,6 +316,8 @@ static void __exit pacct_energy_exit(void)
 
 	// Clean up proc entries for all traced tasks
 	remove_proc();
+
+	pacct_error_report();
 
 	pr_info("pacct_energy removed\n");
 }

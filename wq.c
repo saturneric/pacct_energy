@@ -67,7 +67,6 @@ static void pacct_scan_tasks_workfn(struct work_struct *work)
 	queue_pacct_setup_work();
 }
 
-
 //pick an element of traced_tasks, which is not set up yet
 static bool pick_one_not_ready_candidate(struct traced_task **out)
 {
@@ -99,13 +98,12 @@ static void pacct_setup_workfn(struct work_struct *work)
 		if (!pick_one_not_ready_candidate(&e))
 			break;
 		int ret = setup_traced_task(e);
-		if (unlikely(ret != 0))
-		{
+		if (unlikely(ret != 0)) {
 			pr_alert("Failed to set up task. Trying again later");
 		} else {
-			WRITE_ONCE(e->ready,  1);
+			WRITE_ONCE(e->ready, 1);
 		}
-		
+
 		kref_put(&e->ref_count, release_traced_task);
 
 		cond_resched();
@@ -138,7 +136,7 @@ static void pacct_retire_workfn(struct work_struct *work)
 				     retire_node);
 		list_del_init(&e->retire_node);
 		spin_unlock(&traced_tasks_lock);
-		
+
 		if (kref_put(&e->ref_count, release_traced_task)) {
 			pr_warn("Traced task was not released during retiring: refcount != 0");
 		}
@@ -154,8 +152,6 @@ void queue_pacct_retire_work(void)
 	queue_work(system_unbound_wq, &pacct_retire_work);
 }
 
-
-
 static DECLARE_DELAYED_WORK(pacct_scan_tasks_work, pacct_scan_tasks_workfn);
 
 void queue_pacct_scan_tasks(void)
@@ -168,69 +164,26 @@ void queue_pacct_scan_tasks(void)
 // Estimate the energy from the counters via the model and calculate the power for a traced task
 static __inline__ void pacct_estimate_traced_task_energy(struct traced_task *e)
 {
+	u64 energy_uj;
+	u64 power_wallclock_mW;
+	u64 power_cpu_mW;
 
-	s64 energy_uj = 0;
-	
-	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
-		struct perf_event *ev = READ_ONCE(e->event[i]);
-		if (ev && !IS_ERR(ev)) {
-			u64 counter = read_event_count_sleepable(ev);
-			e->counts[i] = (s64) counter; // Buffer for proc filesystem
-			
-			// pr_info("PID %d(%s), Event %d: counter=%llu, coeff=%lld\n",
-			// 	e->pid, e->comm, i, counter, tracked_events[i].coeff);
-			
-			// do energy_uj += (s64) counter * tracked_events[i].coeff with overflow checking
-			if (counter > S64_MAX)
-			pr_warn("casting overflow for event %d", i);
-			s64 energy_single_uj;
-			if (check_mul_overflow((s64)counter,
-					       tracked_events[i].coeff,
-					       &energy_single_uj)) {
-				pr_warn("multiplication overflow for event %d",
-					i);
-			} else if (check_add_overflow(energy_uj,
-						      energy_single_uj,
-						      &energy_uj)) {
-				pr_warn("addition overflow for event %d", i);
-			}
-		} else {
-			pr_err("Failed to read counter: ev was error or null");
-		}
-	}
-	energy_uj /= COUNTER_SCALE;
+	unsigned long flags;
+	spin_lock_irqsave(&e->periodic_lock, flags);
+	int res = calculate_model(&e->periodic_data, &energy_uj,
+				  &power_wallclock_mW, &power_cpu_mW);
+	(void)res; // no need for error handling here
 
-	// multiple by 28% to match the rapl value
-	//energy_uj = (energy_uj * 9) >> 5;
+	// energy is accumulated, power is just the value itself
+	e->energy_uj += energy_uj;
+	e->power_wallclock_mW = power_wallclock_mW;
+	e->power_cpu_mW = power_cpu_mW;
 
-	s64 old_energy_uj = e->energy_uj;
-	e->energy_uj = energy_uj;
-	if (e->better_timestamp_ns == 0) {
-		e->power_mW = 0;
-		e->better_timestamp_ns = ktime_get_ns();
-		return;
-	}
-	s64 d_energy_uj = energy_uj - old_energy_uj;
-	// if (d_energy_uj < 0) {
-	// 	pr_info("Negative energy estimation, pid=%d(%s), energy_uj=%lld, old_energy_uj=%lld\n",
-	// 		e->pid, e->comm, energy_uj, old_energy_uj);
-	// }
+	// reset for next period
+	memset(&e->periodic_data, 0, sizeof(e->periodic_data));
+	e->periodic_data.time_start_ns = ktime_get_ns();
 
-	u64 now_ns = ktime_get_ns();
-	u64 d_time_ns = now_ns - e->better_timestamp_ns;
-	if (unlikely(d_time_ns == 0)) {
-		pr_warn("zero time passed since last power calculation");
-		return;
-	}
-
-	e->better_timestamp_ns = now_ns;
-	s64 power_mW = div64_s64((d_energy_uj * 1000000LL), (s64)d_time_ns);
-
-	// if (power_mW > 0)
-	// 	pr_info("PID %d(%s): d_energy=%lld uJ, d_time=%llu ns, power=%lld mW\n",
-	// 		e->pid, e->comm, d_energy_uj, d_time_ns, power_mW);
-	e->power_mW = power_mW;
-	return;
+	spin_unlock_irqrestore(&e->periodic_lock, flags);
 }
 
 static void pacct_energy_estimate_workfn(struct work_struct *work)
@@ -267,7 +220,6 @@ static void pacct_energy_estimate_workfn(struct work_struct *work)
 static DECLARE_DELAYED_WORK(pacct_energy_estimate_work,
 			    pacct_energy_estimate_workfn);
 
-
 // ------- Gather stats of all traced tasks and compare with rapl -------
 
 static u32 rapl_eu_shift; // energy unit shift
@@ -299,7 +251,6 @@ static int rapl_read_pkg_energy_uj_on_cpu(int cpu, u64 *uj)
 	*uj = (u64)tmp;
 	return 0;
 }
-
 
 //Calculate the power and energy measured via rapl
 static int sample_pkg_power(u64 *power_mW, u64 *energy_uj)
@@ -353,9 +304,8 @@ static void pacct_gather_total_stats_workfn(struct work_struct *work)
 	struct traced_task *n;
 
 	//Summed values
-	s64 sum_counter[PACCT_TRACED_EVENT_COUNT] = {0};
-	s64 sum_energy = 0;
-	s64 sum_power = 0;
+	s64 sum_energy_uj = 0;
+	s64 sum_power_wallclock_mW = 0;
 
 	spin_lock(&traced_tasks_lock);
 	list_for_each_entry_safe(e, n, &traced_tasks, list) {
@@ -366,31 +316,25 @@ static void pacct_gather_total_stats_workfn(struct work_struct *work)
 			continue;
 		}
 		spin_unlock(&traced_tasks_lock);
-		
-		for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
-			sum_counter[i] += e->counts[i];
-		}
-		sum_energy += e->energy_uj;
-		sum_power += e->power_mW;
+
+		sum_energy_uj += e->energy_uj;
+		sum_power_wallclock_mW += e->power_wallclock_mW;
 
 		kref_put(&e->ref_count, release_traced_task);
 		spin_lock(&traced_tasks_lock);
 	}
 	spin_unlock(&traced_tasks_lock);
 
-	global_stats.energy = sum_energy;
-	global_stats.power = sum_power;
-	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
-		global_stats.counter[i] = sum_counter[i];
-	}
+	global_stats.energy = sum_energy_uj;
+	global_stats.power = sum_power_wallclock_mW;
 
-	u64 rapl_power_mW;  //measured using rapl in mW
+	u64 rapl_power_mW; //measured using rapl in mW
 	u64 rapl_energy_uj; //measured using rapl in uJ
 	if (!sample_pkg_power(&rapl_power_mW, &rapl_energy_uj)) {
 		global_stats.power_rapl = rapl_power_mW;
 		global_stats.energy_rapl = rapl_energy_uj;
-		pr_info("Power: estimated power: %lld mW, pkg power: %llu mW\n",
-			sum_power, rapl_power_mW);
+		pr_info("Power: estimated power (wallclock): %lld mW, pkg power: %llu mW\n",
+			sum_power_wallclock_mW, rapl_power_mW);
 	}
 
 	// simple power capping control based on the sampled package power
