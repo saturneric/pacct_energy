@@ -3,7 +3,7 @@
 #include "events.h"
 
 // TODO real values
-struct pacct_event events_efficiency[PACCT_NUM_EVENTS_EFFICIENCY] = {
+struct pacct_event pacct_events_efficiency[PACCT_NUM_EVENTS_EFFICIENCY] = {
 	// insn retired any
 	{ .code = 0x00, .umask = 0x01, .coeff = 0 },
 	// mem scheduler block
@@ -17,7 +17,7 @@ struct pacct_event events_efficiency[PACCT_NUM_EVENTS_EFFICIENCY] = {
 #define COUNTER_SCALE 100000000
 #define SCALE_COUNTER(counter) ((s64)((double)COUNTER_SCALE * (counter)))
 
-struct pacct_event events_performance[PACCT_NUM_EVENTS_PERFORMANCE] = {
+struct pacct_event pacct_events_performance[PACCT_NUM_EVENTS_PERFORMANCE] = {
 	{
 		// Thread cycles when thread is not in halt state.
 		.code = 0x3c,

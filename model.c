@@ -19,9 +19,10 @@
 		}                                                       \
 	} while (0)
 
-int calculate_model(const struct periodic_data *pd, u64 *restrict energy_uj_out,
-		    u64 *restrict power_wallclock_mW_out,
-		    u64 *restrict power_cpu_mW_out)
+int pacct_model_eval(const struct periodic_data *pd,
+		     u64 *restrict energy_uj_out,
+		     u64 *restrict power_wallclock_mW_out,
+		     u64 *restrict power_cpu_mW_out)
 {
 	s64 acc_efficiency = 0;
 	s64 acc_performance = 0;

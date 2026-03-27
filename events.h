@@ -22,7 +22,7 @@ struct pacct_event {
 	u8 umask;
 	s64 coeff;
 };
-extern struct pacct_event events_efficiency[NUM_EVENTS_EFFICIENCY];
-extern struct pacct_event events_performance[NUM_EVENTS_PERFORMANCE];
+extern struct pacct_event pacct_events_efficiency[NUM_EVENTS_EFFICIENCY];
+extern struct pacct_event pacct_events_performance[NUM_EVENTS_PERFORMANCE];
 
 #endif
