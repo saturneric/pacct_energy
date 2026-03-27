@@ -7,49 +7,149 @@
 #include "cpu-class.h"
 #include "tracepoints.h"
 
-atomic_t counter;
+// save stats for single run and accumulate
+static int pacct_sched_switch_prev(struct task_struct *prev)
+{
+	struct traced_task *t_prev =
+		get_or_create_traced_task(prev->pid, NULL, false);
+	if (PACCT_ERROR_TRACE(sched_switch_prev_no_traced_task,
+			      t_prev == NULL)) {
+		return -1;
+	}
+	if (PACCT_ERROR_TRACE(sched_switch_prev_not_running,
+			      !t_prev->running)) {
+		goto err;
+	}
+	if (PACCT_ERROR_TRACE(sched_switch_prev_wrong_cpu,
+			      task_cpu(prev) != t_prev->current_cpu)) {
+		goto err;
+	}
+
+	enum pacct_cpu_class class = pacct_cpu_class_get(task_cpu(prev));
+	u64 time_diff = ktime_get_ns() - t_prev->run_start_ns;
+	u64 counter_diff[NUM_EVENTS_MAX];
+	for (int i = 0; i < NUM_EVENTS_ON_CLASS(class); i++) {
+		s64 diff = (s64)pacct_counter_read_local(i) -
+			   (s64)t_prev->counter_start[i];
+		if (PACCT_ERROR_TRACE(sched_switch_prev_counter_got_smaller,
+				      diff < 0)) {
+			diff = 0;
+		}
+		counter_diff[i] = (u64)diff;
+	}
+	// accumulate
+	unsigned long flags;
+	// TODO is this the right variant?
+	spin_lock_irqsave(&t_prev->periodic_lock, flags);
+	if (class == PACCT_CPU_CLASS_EFFICIENCY) {
+		t_prev->periodic_data.time_efficiency_ns += time_diff;
+		for (int i = 0; i < PACCT_NUM_EVENTS_EFFICIENCY; i++) {
+			t_prev->periodic_data.counter_diff_efficiency[i] +=
+				counter_diff[i];
+		}
+	} else {
+		t_prev->periodic_data.time_performance_ns += time_diff;
+		for (int i = 0; i < PACCT_NUM_EVENTS_PERFORMANCE; i++) {
+			t_prev->periodic_data.counter_diff_performance[i] +=
+				counter_diff[i];
+		}
+	}
+	spin_unlock_irqrestore(&t_prev->periodic_lock, flags);
+
+	WRITE_ONCE(t_prev->running, false);
+	kref_put(&t_next->ref_count, release_traced_task);
+	return 0;
+err:
+	kref_put(&t_prev->ref_count, release_traced_task);
+	return -1;
+}
+
+// setup next running process with current timestamp and counter values
+static int pacct_sched_switch_next(struct task_struct *next)
+{
+	struct traced_task *t_next =
+		get_or_create_traced_task(next->pid, NULL, false);
+	if (PACCT_ERROR_TRACE(sched_switch_next_no_traced_task,
+			      t_next == NULL)) {
+		return -1;
+	}
+	if (PACCT_ERROR_TRACE(sched_switch_next_already_running,
+			      t_next->running)) {
+		goto err;
+	}
+
+	int me = get_cpu();
+	t_next->run_start_ns = ktime_get_ns();
+	for (int i = 0; i < PACCT_NUM_EVENTS_ON_CPU(me); i++) {
+		t_next->counter_start[i] = pacct_counter_read_local(i);
+	}
+
+	t_next->current_cpu = me; // only for testing
+	put_cpu();
+	WRITE_ONCE(t_next->running, true);
+	kref_put(&t_next->ref_count, release_traced_task);
+	return 0;
+err:
+	kref_put(&t_next->ref_count, release_traced_task);
+	return -1;
+}
+
 static void pacct_sched_switch(void *ignore, bool preempt,
 			       struct task_struct *prev,
 			       struct task_struct *next)
 {
-	// TODO real version
-	int ret;
-	int me = get_cpu();
-	int my_class = pacct_cpu_class_get(me);
-	if (atomic_fetch_add_relaxed(1, &counter) < 100) {
-		pr_info("switching on CPU %d. I am a %s core.\n", me,
-			(my_class == PACCT_CPU_CLASS_EFFICIENCY) ? "effi" :
-								   "perf");
-		u64 counters[NUM_EVENTS_MAX] = { 0 };
-		u64 enabled[NUM_EVENTS_MAX] = { 0 };
-		u64 running[NUM_EVENTS_MAX] = { 0 };
-		for (int i = 0; i < NUM_EVENTS_MAX; i++) {
-			if (pacct_perf_events[me][i] != NULL) {
-				ret = perf_event_read_local(
-					pacct_perf_events[me][i], &counters[i],
-					&enabled[i], &running[i]);
-				if (ret) {
-					pr_err("core %d had trouble reading installed counter %d\n",
-					       me, i);
-				}
-			}
-		}
-		pr_info("counters on my core %d: %llu(%llu/%llu) %llu(%llu/%llu) %llu(%llu/%llu) %llu(%llu/%llu)\n",
-			me, counters[0], running[0], enabled[0], counters[1],
-			running[1], enabled[1], counters[2], running[2],
-			enabled[2], counters[3], running[3], enabled[3]);
-	}
-	put_cpu();
+	// Don't trace kernel threads
+	if (!(prev->flags & PF_KTHREAD))
+		pacct_sched_switch_prev(prev);
+	if (!(next->flags & PF_KTHREAD))
+		pacct_sched_switch_next(next);
 }
 
 static void pacct_process_fork(void *ignore, struct task_struct *parent,
 			       struct task_struct *child)
 {
-	// TODO real version
+	// Don't trace kernel threads
+	if (child->flags & PF_KTHREAD)
+		return;
+
+	struct traced_task *e =
+		get_or_create_traced_task(child->pid, child->comm, true);
+	if (!e) {
+		pr_err("Failed to get or create traced task for PID %d\n",
+		       child->pid);
+		return;
+	}
+	queue_pacct_setup_work();
+
+	kref_put(&e->ref_count, release_traced_task);
 }
+
+//move task from traced_tasks to retiring_traced_tasks
 static void pacct_process_exit(void *ignore, struct task_struct *p)
 {
-	// TODO real version
+	// Don't trace kernel threads
+	if (p->flags & PF_KTHREAD)
+		return;
+	struct traced_task *e = get_or_create_traced_task(p->pid, NULL, false);
+	if (!e)
+		return;
+
+	// Mark this task as retiring so that the sample_workfn can skip it if it hasn't run yet
+	// TODO: Is it not already skipped by not being in the list?
+	// TODO: How can the final counters be measured? Do even want to? (The proc file which would display the values will be deleted anyway)
+	WRITE_ONCE(e->retiring, true);
+
+	// remove from traced_tasks
+	spin_lock(&traced_tasks_lock);
+	list_del_init(&e->list);
+
+	// add to retiring_traced_tasks for cleanup
+	list_add_tail(&e->retire_node, &retiring_traced_tasks);
+
+	spin_unlock(&traced_tasks_lock);
+
+	// we'd got a ref from get_traced_task()
+	kref_put(&e->ref_count, release_traced_task);
 }
 
 static struct tracepoint *tp_sched_switch = NULL;
