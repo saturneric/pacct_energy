@@ -11,7 +11,7 @@ int pacct_error_trace(struct pacct_error_trace *tr, int cond);
 #define PACCT_ERROR_TRACE(name, cond) \
 	pacct_error_trace(&pacct_errors.name, cond)
 
-#define PACCT_ERRORS                                                  \
+#define PACCT_ERRORS                                                 \
 	PACCT_ERROR_TRANSFORM(model_bad_time)                        \
 	PACCT_ERROR_TRANSFORM(model_overflow_mul)                    \
 	PACCT_ERROR_TRANSFORM(model_overflow_add)                    \
@@ -20,14 +20,13 @@ int pacct_error_trace(struct pacct_error_trace *tr, int cond);
 	PACCT_ERROR_TRANSFORM(sched_switch_prev_no_traced_task)      \
 	PACCT_ERROR_TRANSFORM(sched_switch_prev_not_ready)           \
 	PACCT_ERROR_TRANSFORM(sched_switch_prev_not_running)         \
-	PACCT_ERROR_TRANSFORM(sched_switch_prev_invalid_cpu_class)   \
 	PACCT_ERROR_TRANSFORM(sched_switch_prev_counter_got_smaller) \
-	PACCT_ERROR_TRANSFORM(sched_switch_prev_null_event) \
+	PACCT_ERROR_TRANSFORM(sched_switch_prev_null_event)          \
 	PACCT_ERROR_TRANSFORM(sched_switch_next_no_traced_task)      \
 	PACCT_ERROR_TRANSFORM(sched_switch_next_not_ready)           \
-	PACCT_ERROR_TRANSFORM(sched_switch_next_already_running) \
-	PACCT_ERROR_TRANSFORM(sched_switch_next_null_event) \
-	PACCT_ERROR_TRANSFORM(read_event_count_run_ena_mismatch) \
+	PACCT_ERROR_TRANSFORM(sched_switch_next_already_running)     \
+	PACCT_ERROR_TRANSFORM(sched_switch_next_null_event)          \
+	PACCT_ERROR_TRANSFORM(read_event_count_run_ena_mismatch)     \
 	PACCT_ERROR_TRANSFORM(read_event_count_run_ena_mismatch_big)
 
 #define PACCT_ERROR_TRANSFORM(name) struct pacct_error_trace name;

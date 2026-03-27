@@ -10,16 +10,13 @@
 #include "proc.h"
 #include "cpu-class.h"
 #include "errors.h"
+#include "tracepoints.h"
+#include "counters.h"
 
 MODULE_AUTHOR("pm3");
 MODULE_DESCRIPTION("Process Energy Accounting Module");
 MODULE_LICENSE("GPL");
 MODULE_VERSION("0.1");
-
-// Tracepoint for events
-static struct tracepoint *tp_sched_switch;
-static struct tracepoint *tp_sched_exit;
-static struct tracepoint *tp_sched_fork;
 
 // List of tasks being traced
 struct list_head traced_tasks;
@@ -53,7 +50,8 @@ static int pacct_sched_switch_prev(struct task_struct *prev)
 	}
 
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
-		if (PACCT_ERROR_TRACE(sched_switch_prev_null_event, t_prev->event[i] == NULL)) {
+		if (PACCT_ERROR_TRACE(sched_switch_prev_null_event,
+				      t_prev->event[i] == NULL)) {
 			goto err;
 		}
 	}
@@ -77,9 +75,7 @@ static int pacct_sched_switch_prev(struct task_struct *prev)
 	// accumulate
 	unsigned long flags;
 	spin_lock_irqsave(&t_prev->periodic_lock, flags);
-	if (PACCT_ERROR_TRACE(sched_switch_prev_invalid_cpu_class,
-			      class == PACCT_CPU_CLASS_NONE)) {
-	} else if (class == PACCT_CPU_CLASS_EFFICIENCY) {
+	if (class == PACCT_CPU_CLASS_EFFICIENCY) {
 		t_prev->periodic_data.time_efficiency_ns += time_diff;
 		for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
 			t_prev->periodic_data.counter_diff_efficiency[i] +=
@@ -121,7 +117,8 @@ static int pacct_sched_switch_next(struct task_struct *next)
 
 	t_next->run_start_ns = ktime_get_ns();
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
-		if (PACCT_ERROR_TRACE(sched_switch_next_null_event, t_next->event[i] == NULL)) {
+		if (PACCT_ERROR_TRACE(sched_switch_next_null_event,
+				      t_next->event[i] == NULL)) {
 			goto err;
 		}
 	}
@@ -137,9 +134,9 @@ err:
 	return -1;
 }
 
-static void pacct_sched_switch(void *ignore, bool preempt,
-			       struct task_struct *prev,
-			       struct task_struct *next)
+static void old_pacct_sched_switch(void *ignore, bool preempt,
+				   struct task_struct *prev,
+				   struct task_struct *next)
 {
 	// Don't trace kernel threads
 	if (!(prev->flags & PF_KTHREAD))
@@ -148,8 +145,8 @@ static void pacct_sched_switch(void *ignore, bool preempt,
 		pacct_sched_switch_next(next);
 }
 
-static void pacct_process_fork(void *ignore, struct task_struct *parent,
-			       struct task_struct *child)
+static void old_pacct_process_fork(void *ignore, struct task_struct *parent,
+				   struct task_struct *child)
 {
 	// Don't trace kernel threads
 	if (child->flags & PF_KTHREAD)
@@ -173,7 +170,7 @@ static void pacct_process_fork(void *ignore, struct task_struct *parent,
 }
 
 //move task from traced_tasks to retiring_traced_tasks
-static void pacct_process_exit(void *ignore, struct task_struct *p)
+static void old_pacct_process_exit(void *ignore, struct task_struct *p)
 {
 	// Don't trace kernel threads
 	if (p->flags & PF_KTHREAD)
@@ -200,18 +197,6 @@ static void pacct_process_exit(void *ignore, struct task_struct *p)
 	kref_put(&e->ref_count, release_traced_task);
 }
 
-//Looks for the wanted tracepoints and store in static variables
-static void tp_lookup_cb(struct tracepoint *tp, void *priv)
-{
-	(void)priv;
-	if (!strcmp(tp->name, "sched_switch"))
-		tp_sched_switch = tp;
-	else if (!strcmp(tp->name, "sched_process_fork"))
-		tp_sched_fork = tp;
-	else if (!strcmp(tp->name, "sched_process_exit"))
-		tp_sched_exit = tp;
-}
-
 static void clean_traced_task(void)
 {
 	// Move all currently traced tasks to the retiring list for cleanup
@@ -224,90 +209,60 @@ static void clean_traced_task(void)
 	spin_unlock(&traced_tasks_lock);
 }
 
-static int __init pacct_energy_init(void) //Start of the module
+static int __init pacct_energy_init(void)
 {
 	int ret;
 
 	pr_info("pacct_energy init\n");
 
-	// Classify CPUs
 	ret = pacct_cpu_class_init();
 	if (ret) {
 		pr_err("could not initialize CPU classes\n");
 		goto err;
 	}
+	ret = pacct_counters_install();
+	if (ret) {
+		pr_err("could not install counters\n");
+		goto err;
+	}
+	pr_info("installed counters\n");
+	ret = pacct_tracepoints_register();
+	if (ret) {
+		pr_err("could not register tracepoints\n");
+		goto err_counters;
+	}
+	pr_info("registered tracepoints\n");
 
+	// TODO this needs to happen before the tracpoints are registered
 	// Initialize the list of traced tasks and the lock
-	spin_lock_init(&traced_tasks_lock);
-	INIT_LIST_HEAD(&traced_tasks);
-	INIT_LIST_HEAD(&retiring_traced_tasks);
+	// spin_lock_init(&traced_tasks_lock);
+	// INIT_LIST_HEAD(&traced_tasks);
+	// INIT_LIST_HEAD(&retiring_traced_tasks);
 
 	// Initialize the powercap interfaces and get the initial CPU frequency caps
-	ret = powercap_init_caps();
-	if (ret) {
-		pr_err("powercap init failed: %d\n", ret);
-		goto err;
-	}
+	// TODO ret = powercap_init_caps();
+	// if (ret) {
+	// 	pr_err("powercap init failed: %d\n", ret);
+	// 	goto err_counters;
+	// }
 
-	//find the needed tracepoints
-	for_each_kernel_tracepoint(tp_lookup_cb, NULL);
-	if (!tp_sched_switch) {
-		pr_err("tracepoint sched_switch not found\n");
-		ret = -ENOENT;
-		goto err;
-	}
-	if (!tp_sched_fork) {
-		pr_err("tracepoint sched_process_fork not found\n");
-		ret = -ENOENT;
-		goto err;
-	}
-	if (!tp_sched_exit) {
-		pr_err("tracepoint sched_process_exit not found\n");
-		ret = -ENOENT;
-		goto err;
-	}
-
-	// Register the functions to be called on the trace points
-	ret = tracepoint_probe_register(tp_sched_switch,
-					(void *)pacct_sched_switch, NULL);
-	if (ret) {
-		pr_err("tracepoint_probe_register for switch failed: %d\n",
-		       ret);
-		goto err;
-	}
-
-	ret = tracepoint_probe_register(tp_sched_fork,
-					(void *)pacct_process_fork, NULL);
-	if (ret) {
-		pr_err("tracepoint_probe_register for fork failed: %d\n", ret);
-		goto err_tp_sched_switch;
-	}
-
-	ret = tracepoint_probe_register(tp_sched_exit,
-					(void *)pacct_process_exit, NULL);
-	if (ret) {
-		pr_err("tracepoint_probe_register for exit failed: %d\n", ret);
-		goto err_tp_sched_fork;
-	}
-
-	init_proc(); // Create directory in proc/
+	// init_proc(); // Create directory in proc/
 
 	// Start the energy estimator work
-	pacct_start_energy_estimator();
+	// pacct_start_energy_estimator();
 
 	// Schedule a delayed work to scan existing tasks and create traced_task entries for them
-	queue_pacct_scan_tasks();
+	// queue_pacct_scan_tasks();
 
 	return 0;
 
-err_tp_sched_fork:
-	tracepoint_probe_unregister(tp_sched_fork, (void *)pacct_process_fork,
-				    NULL);
-err_tp_sched_switch:
-	tracepoint_probe_unregister(tp_sched_switch, (void *)pacct_sched_switch,
-				    NULL);
 	// Clean up any traced tasks that might have been created before the failure
-	clean_traced_task();
+	// clean_traced_task();
+
+err_tracepoints:
+	pacct_tracepoints_unregister();
+err_counters:
+	pacct_counters_uninstall();
 err:
 	return ret;
 }
@@ -315,29 +270,21 @@ err:
 static void __exit pacct_energy_exit(void)
 {
 	// Stop the energy estimator work by first
-	pacct_stop_energy_estimator();
+	// pacct_stop_energy_estimator();
 
-	if (tp_sched_switch)
-		tracepoint_probe_unregister(tp_sched_switch,
-					    (void *)pacct_sched_switch, NULL);
-	if (tp_sched_fork)
-		tracepoint_probe_unregister(tp_sched_fork,
-					    (void *)pacct_process_fork, NULL);
-
-	if (tp_sched_exit)
-		tracepoint_probe_unregister(tp_sched_exit,
-					    (void *)pacct_process_exit, NULL);
+	pacct_tracepoints_unregister();
+	pacct_counters_uninstall();
 
 	// Clean up for powercap policies and interfaces
-	powercap_cleanup_caps();
+	// powercap_cleanup_caps();
 
 	// Clean up all traced tasks
-	clean_traced_task();
+	// clean_traced_task();
 
 	// Clean up proc entries for all traced tasks
-	remove_proc();
+	// remove_proc();
 
-	pacct_error_report();
+	// pacct_error_report();
 
 	pr_info("pacct_energy removed\n");
 }

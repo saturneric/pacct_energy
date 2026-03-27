@@ -44,10 +44,12 @@ u64 read_event_count(struct perf_event *ev)
 	if (running == 0 || enabled == 0) {
 		return 0;
 	}
-	if (PACCT_ERROR_TRACE(read_event_count_run_ena_mismatch, running != enabled)) {
+	if (PACCT_ERROR_TRACE(read_event_count_run_ena_mismatch,
+			      running != enabled)) {
 		val = mul_u64_u64_div_u64(val, enabled, running);
 	}
-	PACCT_ERROR_TRACE(read_event_count_run_ena_mismatch_big, running * 2 < enabled);
+	PACCT_ERROR_TRACE(read_event_count_run_ena_mismatch_big,
+			  running * 2 < enabled);
 	return val;
 }
 
