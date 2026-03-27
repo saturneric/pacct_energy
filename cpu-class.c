@@ -9,9 +9,7 @@
 // this requires that there are 2 kinds of max frequencies on the system
 
 #define NCPU 256
-static enum pacct_cpu_class pacct_cpu_classes[NCPU] = {
-	0
-}; // initialized to 0 = NONE
+static enum pacct_cpu_class pacct_cpu_classes[NCPU] = {};
 
 #define CPU_FREQ_UNINIT 0xffffffffu
 int pacct_cpu_class_init(void)
@@ -19,7 +17,7 @@ int pacct_cpu_class_init(void)
 	unsigned int freq_lo = CPU_FREQ_UNINIT;
 	unsigned int freq_hi = CPU_FREQ_UNINIT;
 	int cpu;
-	for_each_online_cpu(cpu) { // TODO present CPU?
+	for_each_possible_cpu(cpu) {
 		unsigned int max_freq = cpufreq_quick_get_max(cpu);
 		if (freq_lo == CPU_FREQ_UNINIT && freq_hi == CPU_FREQ_UNINIT) {
 			// very first freq
@@ -39,7 +37,7 @@ int pacct_cpu_class_init(void)
 		}
 	}
 	// we now have 2 classes. Assign CPUs.
-	for_each_online_cpu(cpu) {
+	for_each_possible_cpu(cpu) {
 		if (cpu < 0 || cpu >= NCPU) {
 			pr_err("invalid CPU index\n");
 			return -1;
@@ -55,8 +53,9 @@ int pacct_cpu_class_init(void)
 
 enum pacct_cpu_class pacct_cpu_class_get(int cpu)
 {
-	if (cpu < 0 || cpu >= NCPU) {
-		return PACCT_CPU_CLASS_NONE;
+	if (unlikely(cpu < 0 || cpu >= NCPU)) {
+		pr_err("invalid CPU index\n");
+		return PACCT_CPU_CLASS_EFFICIENCY; // dummy value
 	}
 	return pacct_cpu_classes[cpu];
 }
