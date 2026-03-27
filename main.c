@@ -52,6 +52,11 @@ static int pacct_sched_switch_prev(struct task_struct *prev)
 		goto err;
 	}
 
+	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
+		if (PACCT_ERROR_TRACE(sched_switch_prev_null_event, t_prev->event[i] == NULL)) {
+			goto err;
+		}
+	}
 	u64 time_diff = ktime_get_ns() - t_prev->run_start_ns;
 	u64 counter_diff[PACCT_TRACED_EVENT_COUNT];
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
@@ -63,6 +68,9 @@ static int pacct_sched_switch_prev(struct task_struct *prev)
 			diff = 0; // TODO ?
 		}
 		counter_diff[i] = (u64)diff;
+
+		// TODO perf_event_disable_local?
+		// perf_event_disable(t_next->event[i]); TODO why not here? module freezes
 	}
 	// TODO verify that task_cpu returns the correct value even though we're not scheduled anymore
 	enum pacct_cpu_class class = pacct_cpu_class_get(task_cpu(prev));
@@ -113,6 +121,12 @@ static int pacct_sched_switch_next(struct task_struct *next)
 
 	t_next->run_start_ns = ktime_get_ns();
 	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
+		if (PACCT_ERROR_TRACE(sched_switch_next_null_event, t_next->event[i] == NULL)) {
+			goto err;
+		}
+	}
+	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
+		// perf_event_enable(t_next->event[i]); TODO why not here? module freezes
 		t_next->counter_start[i] = read_event_count(t_next->event[i]);
 	}
 

@@ -9,6 +9,8 @@
 #include <linux/perf_event.h>
 #include <linux/math64.h>
 
+#include "errors.h"
+
 struct task_struct *get_task_by_pid(pid_t pid)
 {
 	struct task_struct *task = NULL;
@@ -39,9 +41,14 @@ u64 read_event_count(struct perf_event *ev)
 		return 0;
 
 	// Scale the raw count to account for time when the event was enabled but not running
-	u64 scaled =
-		(running ? mul_u64_u64_div_u64(val, enabled, running) : val);
-	return scaled;
+	if (running == 0 || enabled == 0) {
+		return 0;
+	}
+	if (PACCT_ERROR_TRACE(read_event_count_run_ena_mismatch, running != enabled)) {
+		val = mul_u64_u64_div_u64(val, enabled, running);
+	}
+	PACCT_ERROR_TRACE(read_event_count_run_ena_mismatch_big, running * 2 < enabled);
+	return val;
 }
 
 u64 read_event_count_sleepable(struct perf_event *ev)

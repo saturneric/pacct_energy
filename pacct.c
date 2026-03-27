@@ -151,6 +151,7 @@ static int setup_task_counter(pid_t pid, struct perf_event **event,
 		goto err;
 	}
 
+	// do not enable events here TODO
 	perf_event_enable(*event);
 	return 0;
 
