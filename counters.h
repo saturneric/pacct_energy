@@ -5,11 +5,16 @@
 
 #include "events.h"
 
-#define NUM_CPUS 20 // TODO
-
 int pacct_counters_install(void);
 void pacct_counters_uninstall(void);
 
-extern struct perf_event *pacct_perf_events[NUM_CPUS][NUM_EVENTS_MAX];
+/*
+ * Reads an event from the current CPU core.
+ * You should be in atomic context when you call this!
+ *
+ * @counter: counter value (range 0..=PACCT_NUM_EVENTS_MAX).
+ * 	If there are less counters installed on this core, returns 0.
+ */
+u64 pacct_counter_read_local(unsigned int counter);
 
 #endif

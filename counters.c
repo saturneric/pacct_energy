@@ -5,7 +5,8 @@
 #include "cpu-class.h"
 #include "counters.h"
 
-struct perf_event *pacct_perf_events[NUM_CPUS][NUM_EVENTS_MAX] = { 0 };
+#define NUM_CPUS 20 // TODO?
+static struct perf_event *pacct_perf_events[NUM_CPUS][NUM_EVENTS_MAX] = { 0 };
 
 static void my_overflow_handler(struct perf_event *pev,
 				struct perf_sample_data *sample,
@@ -16,7 +17,8 @@ static void my_overflow_handler(struct perf_event *pev,
 
 #define EVENT_CONFIG(ev) ((u64)(ev).code | ((u64)(ev).umask << 8))
 
-/* Creates a new raw counter on specified CPU.
+/*
+ * Creates a new raw counter on specified CPU.
  * Returns the counter if successful, `NULL` otherwise.
  */
 static struct perf_event *install_counter(struct pacct_event ev, int cpu)
@@ -29,9 +31,9 @@ static struct perf_event *install_counter(struct pacct_event ev, int cpu)
 	attr.pinned = 1;
 	struct perf_event *perf_event = perf_event_create_kernel_counter(
 		&attr, cpu, NULL, my_overflow_handler, NULL);
-	pr_info("install counter (c=%02x,u=%02x) on core %d: %s\n", ev.code,
-		ev.umask, cpu, IS_ERR_VALUE(perf_event) ? "fail" : "success");
 	if (IS_ERR_VALUE(perf_event)) {
+		pr_err("could not install counter (c=%02x,u=%02x) on core %d\n",
+		       ev.code, ev.umask, cpu);
 		return NULL;
 	}
 	return perf_event;
@@ -87,4 +89,25 @@ void pacct_counters_uninstall(void)
 			uninstall_counter(pacct_perf_events[cpu][i]);
 		}
 	}
+}
+
+u64 pacct_counter_read_local(unsigned int counter)
+{
+	if (PACCT_ERROR_TRACE(counter_bad_read, counter >= NUM_EVENTS_MAX)) {
+		return 0;
+	}
+	int me = get_cpu();
+	struct perf_event *pev = pacct_perf_events[me][counter];
+	u64 value = 0, enabled, running;
+	if (pev != NULL) {
+		int ret =
+			perf_event_read_local(pev, &value, &enabled, &running);
+		if (PACCT_ERROR_TRACE(counter_bad_read, ret)) {
+			put_cpu();
+			return 0;
+		}
+		PACCT_ERROR_TRACE(counter_multiplexed, enabled != running);
+	}
+	put_cpu();
+	return value;
 }
