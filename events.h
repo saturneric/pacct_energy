@@ -17,12 +17,13 @@
 						 PACCT_NUM_EVENTS_PERFORMANCE)
 #define PACCT_NUM_EVENTS_ON_CPU(cpu) \
 	PACCT_NUM_EVENTS_ON_CLASS(pacct_cpu_class_get(cpu))
+#define PACCT_COEFF_SCALE 100000000
 struct pacct_event {
 	u8 code;
 	u8 umask;
 	s64 coeff;
 };
-extern struct pacct_event pacct_events_efficiency[NUM_EVENTS_EFFICIENCY];
-extern struct pacct_event pacct_events_performance[NUM_EVENTS_PERFORMANCE];
+extern struct pacct_event pacct_events_efficiency[PACCT_NUM_EVENTS_EFFICIENCY];
+extern struct pacct_event pacct_events_performance[PACCT_NUM_EVENTS_PERFORMANCE];
 
 #endif

@@ -10,16 +10,16 @@
 #include <linux/perf_event.h>
 #include <linux/overflow.h>
 
-#include "pacct.h"
+#include "traced-task.h"
 #include "errors.h"
+#include "model.h"
+#include "wq.h"
+#include "powercap.h"
 
 #define PACCT_SETUP_BUDGET 32
 #define ENERGY_ESTIMATE_PERIOD_MS 30
 #define TOTAL_POWER_GATHER_PERIOD_MS 150
 
-extern struct list_head traced_tasks;
-extern struct list_head retiring_traced_tasks;
-extern spinlock_t traced_tasks_lock;
 extern u64 last_pkg_raw, last_ns;
 
 static atomic_t estimator_enabled = ATOMIC_INIT(0);
@@ -29,61 +29,25 @@ module_param(enable_power_cap, bool, 0644);
 
 // --- Setup tasks ------
 
-// Add all existing processes to our traced_tasks list to be initialized later
-static void pacct_scan_tasks_workfn(struct work_struct *work)
+/*
+ * Picks an element of traced_tasks, which is not set up yet.
+ * Increases refcount if found.
+ */
+static bool pick_one_not_ready_candidate(struct pacct_traced_task **out)
 {
-	struct task_struct *task;
-
-	// Iterate over all existing tasks and add them to the traced_tasks list if
-	// they are not kernel threads.
-	for_each_process(task) {
-		struct task_struct *ts = task;
-
-		get_task_struct(ts);
-
-		if (ts->flags & PF_KTHREAD) { //Ignore kernel
-			put_task_struct(ts);
-			continue;
-		}
-
-		{
-			struct traced_task *e = get_or_create_traced_task(
-				ts->pid, ts->comm, true);
-			if (!e) {
-				pr_err("Failed to get or create traced task for PID %d\n",
-				       ts->pid);
-				put_task_struct(ts);
-				continue;
-			}
-
-			// pr_info("Initially tracing existing process: PID %d, COMM %s\n",
-			// 	ts->pid, ts->comm);
-
-			kref_put(&e->ref_count, release_traced_task);
-		}
-
-		put_task_struct(ts);
-	}
-
-	queue_pacct_setup_work();
-}
-
-//pick an element of traced_tasks, which is not set up yet
-static bool pick_one_not_ready_candidate(struct traced_task **out)
-{
-	struct traced_task *e;
+	struct pacct_traced_task *e;
 
 	*out = NULL;
 
-	spin_lock(&traced_tasks_lock);
-	list_for_each_entry(e, &traced_tasks, list) {
+	spin_lock(&pacct_traced_tasks_lock);
+	list_for_each_entry(e, &pacct_traced_tasks, list) {
 		if (!READ_ONCE(e->ready)) {
 			kref_get(&e->ref_count);
 			*out = e;
 			break;
 		}
 	}
-	spin_unlock(&traced_tasks_lock);
+	spin_unlock(&pacct_traced_tasks_lock);
 
 	return *out != NULL;
 }
@@ -93,19 +57,21 @@ static void pacct_setup_workfn(struct work_struct *work)
 {
 	int done = 0;
 
+	// TODO For the first time we do this, shouldn't we do all processes?
+	// TODO Not just PACCT_SETUP_BUDGET many?
 	for (; done < PACCT_SETUP_BUDGET; done++) {
-		struct traced_task *e;
+		struct pacct_traced_task *e;
 
 		if (!pick_one_not_ready_candidate(&e))
 			break;
-		int ret = setup_traced_task(e);
+		int ret = pacct_traced_task_setup(e);
 		if (unlikely(ret != 0)) {
 			pr_alert("Failed to set up task. Trying again later");
 		} else {
 			WRITE_ONCE(e->ready, 1);
 		}
 
-		kref_put(&e->ref_count, release_traced_task);
+		kref_put(&e->ref_count, pacct_traced_task_release);
 
 		cond_resched();
 	}
@@ -113,7 +79,7 @@ static void pacct_setup_workfn(struct work_struct *work)
 
 static DECLARE_WORK(pacct_setup_work, pacct_setup_workfn);
 
-void queue_pacct_setup_work(void)
+void pacct_queue_setup_work(void)
 {
 	queue_work(system_unbound_wq, &pacct_setup_work);
 }
@@ -123,57 +89,87 @@ void queue_pacct_setup_work(void)
 // Delete entries from retired_traced_tasks list and clean them up if this was the last reference
 static void pacct_retire_workfn(struct work_struct *work)
 {
-	struct traced_task *e;
+	struct pacct_traced_task *e;
 
 	for (;;) {
-		spin_lock(&traced_tasks_lock);
+		spin_lock(&pacct_traced_tasks_lock);
 
-		if (list_empty(&retiring_traced_tasks)) {
-			spin_unlock(&traced_tasks_lock);
+		if (list_empty(&pacct_retiring_traced_tasks)) {
+			spin_unlock(&pacct_traced_tasks_lock);
 			break;
 		}
 
-		e = list_first_entry(&retiring_traced_tasks, struct traced_task,
-				     retire_node);
+		e = list_first_entry(&pacct_retiring_traced_tasks,
+				     struct pacct_traced_task, retire_node);
 		list_del_init(&e->retire_node);
-		spin_unlock(&traced_tasks_lock);
+		spin_unlock(&pacct_traced_tasks_lock);
 
-		if (kref_put(&e->ref_count, release_traced_task)) {
+		if (kref_put(&e->ref_count, pacct_traced_task_release)) {
 			pr_warn("Traced task was not released during retiring: refcount != 0");
 		}
 
-		cond_resched(); // Why scheduling?
+		cond_resched();
 	}
 }
 
 static DECLARE_WORK(pacct_retire_work, pacct_retire_workfn);
 
-void queue_pacct_retire_work(void)
+void pacct_queue_retire_work(void)
 {
 	queue_work(system_unbound_wq, &pacct_retire_work);
 }
 
-static DECLARE_DELAYED_WORK(pacct_scan_tasks_work, pacct_scan_tasks_workfn);
-
-void queue_pacct_scan_tasks(void)
-{
-	schedule_delayed_work(&pacct_scan_tasks_work, msecs_to_jiffies(100));
-}
-
 //--------- Estimate energy and power for traced tasks --------
 
-// Estimate the energy from the counters via the model and calculate the power for a traced task
-static __inline__ void pacct_estimate_traced_task_energy(struct traced_task *e)
+static void pacct_estimate_traced_task_energy(struct pacct_traced_task *e)
 {
-	u64 energy_uj;
-	u64 power_wallclock_mW;
-	u64 power_cpu_mW;
+	u64 energy_uj = 0;
+	u64 power_wallclock_mW = 0;
+	u64 power_cpu_mW = 0;
 
 	unsigned long flags;
+	// TODO not sure if this is the spinlock variant we want.
+	// But this one should always work.
 	spin_lock_irqsave(&e->periodic_lock, flags);
-	int res = calculate_model(&e->periodic_data, &energy_uj,
-				  &power_wallclock_mW, &power_cpu_mW);
+	extern struct pacct_traced_task *temp_first_scheduled;
+	if (temp_first_scheduled == e) {
+		pr_info("%p's periodic_data {\n", e);
+		pr_info("  elapsed time (ns): %llu\n",
+			ktime_get_ns() - e->periodic_data.time_start_ns);
+		pr_info("  time on effi (ns): %llu\n",
+			e->periodic_data.time_efficiency_ns);
+		pr_info("  time on perf (ns): %llu\n",
+			e->periodic_data.time_performance_ns);
+		// TODO hard-coded
+		pr_info("  counter diff effi: %llu %llu %llu %llu\n",
+			e->periodic_data.counter_diff_efficiency[0],
+			e->periodic_data.counter_diff_efficiency[1],
+			e->periodic_data.counter_diff_efficiency[2],
+			e->periodic_data.counter_diff_efficiency[3]);
+		pr_info("  counter diff perf: %llu %llu %llu %llu %llu %llu %llu %llu\n",
+			e->periodic_data.counter_diff_performance[0],
+			e->periodic_data.counter_diff_performance[1],
+			e->periodic_data.counter_diff_performance[2],
+			e->periodic_data.counter_diff_performance[3],
+			e->periodic_data.counter_diff_performance[4],
+			e->periodic_data.counter_diff_performance[5],
+			e->periodic_data.counter_diff_performance[6],
+			e->periodic_data.counter_diff_performance[7]);
+		pr_info("}\n");
+	}
+	int res = pacct_model_eval(&e->periodic_data, &energy_uj,
+				   &power_wallclock_mW, &power_cpu_mW);
 	(void)res; // no need for error handling here
+	if (temp_first_scheduled == e) {
+		if (res == 0) {
+			pr_info("--- energy_uj: %llu\n", energy_uj);
+			pr_info("--- power_wallclock_mW: %llu\n",
+				power_wallclock_mW);
+			pr_info("--- power_cpu_mW: %llu\n", power_cpu_mW);
+		} else {
+			pr_info("--- model failed\n");
+		}
+	}
 
 	// energy is accumulated, power is just the value itself
 	e->energy_uj += energy_uj;
@@ -192,26 +188,29 @@ static void pacct_energy_estimate_workfn(struct work_struct *work)
 	struct delayed_work *dwork =
 		container_of(work, struct delayed_work, work);
 
-	struct traced_task *e, *n;
+	struct pacct_traced_task *e;
 
-	spin_lock(&traced_tasks_lock);
-	list_for_each_entry_safe(e, n, &traced_tasks, list) {
+	spin_lock(&pacct_traced_tasks_lock);
+	list_for_each_entry(e, &pacct_traced_tasks, list) {
 		kref_get(&e->ref_count);
 
-		if (!READ_ONCE(e->ready) || READ_ONCE(e->retiring)) {
-			kref_put(&e->ref_count, release_traced_task);
+		// NOTE: removed ready check here because it's not necessary anymore
+		if (READ_ONCE(e->retiring)) {
+			kref_put(&e->ref_count, pacct_traced_task_release);
 			continue;
 		}
 
-		spin_unlock(&traced_tasks_lock);
+		spin_unlock(&pacct_traced_tasks_lock);
 
 		pacct_estimate_traced_task_energy(e);
 
-		kref_put(&e->ref_count, release_traced_task);
+		kref_put(&e->ref_count, pacct_traced_task_release);
+		// TODO isn't this a use-after-free here? We potentially free
+		// the entry e, but still use it to advance in the list
 
-		spin_lock(&traced_tasks_lock);
+		spin_lock(&pacct_traced_tasks_lock);
 	}
-	spin_unlock(&traced_tasks_lock);
+	spin_unlock(&pacct_traced_tasks_lock);
 
 	if (atomic_read(&estimator_enabled))
 		schedule_delayed_work(
@@ -256,7 +255,6 @@ static int rapl_read_pkg_energy_uj_on_cpu(int cpu, u64 *uj)
 //Calculate the power and energy measured via rapl
 static int sample_pkg_power(u64 *power_mW, u64 *energy_uj)
 {
-	// u64 raw = read_event_count(evt_cores);
 	u64 now = ktime_get_ns();
 
 	if (rapl_eu_shift == 0) {
@@ -301,30 +299,30 @@ static void pacct_gather_total_stats_workfn(struct work_struct *work)
 {
 	struct delayed_work *dwork =
 		container_of(work, struct delayed_work, work);
-	struct traced_task *e;
-	struct traced_task *n;
+	struct pacct_traced_task *e;
+	struct pacct_traced_task *n;
 
 	//Summed values
 	s64 sum_energy_uj = 0;
 	s64 sum_power_wallclock_mW = 0;
 
-	spin_lock(&traced_tasks_lock);
-	list_for_each_entry_safe(e, n, &traced_tasks, list) {
+	spin_lock(&pacct_traced_tasks_lock);
+	list_for_each_entry_safe(e, n, &pacct_traced_tasks, list) {
 		kref_get(&e->ref_count);
 
 		if (!READ_ONCE(e->ready)) {
-			kref_put(&e->ref_count, release_traced_task);
+			kref_put(&e->ref_count, pacct_traced_task_release);
 			continue;
 		}
-		spin_unlock(&traced_tasks_lock);
+		spin_unlock(&pacct_traced_tasks_lock);
 
 		sum_energy_uj += e->energy_uj;
 		sum_power_wallclock_mW += e->power_wallclock_mW;
 
-		kref_put(&e->ref_count, release_traced_task);
-		spin_lock(&traced_tasks_lock);
+		kref_put(&e->ref_count, pacct_traced_task_release);
+		spin_lock(&pacct_traced_tasks_lock);
 	}
-	spin_unlock(&traced_tasks_lock);
+	spin_unlock(&pacct_traced_tasks_lock);
 
 	global_stats.energy = sum_energy_uj;
 	global_stats.power = sum_power_wallclock_mW;
@@ -342,9 +340,6 @@ static void pacct_gather_total_stats_workfn(struct work_struct *work)
 	if (enable_power_cap)
 		pacct_powercap_control_step(rapl_power_mW);
 
-	// TODO this is here only for testing
-	pacct_error_report();
-
 	if (atomic_read(&estimator_enabled))
 		schedule_delayed_work(
 			dwork, msecs_to_jiffies(TOTAL_POWER_GATHER_PERIOD_MS));
@@ -355,7 +350,7 @@ static DECLARE_DELAYED_WORK(pacct_gather_total_stats_work,
 
 //--------- Start or stop periodic tasks -----------
 
-void pacct_start_energy_estimator(void)
+void pacct_queue_energy_estimator_start(void)
 {
 	if (atomic_xchg(&estimator_enabled,
 			1)) //Ensure estimator is only activated once
@@ -368,7 +363,7 @@ void pacct_start_energy_estimator(void)
 			      msecs_to_jiffies(TOTAL_POWER_GATHER_PERIOD_MS));
 }
 
-void pacct_stop_energy_estimator(void)
+void pacct_queue_energy_estimator_stop(void)
 {
 	atomic_set(&estimator_enabled, 0);
 	cancel_delayed_work_sync(&pacct_energy_estimate_work);

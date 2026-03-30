@@ -4,9 +4,12 @@
 #include "events.h"
 #include "cpu-class.h"
 #include "counters.h"
+#include "errors.h"
 
 #define NUM_CPUS 20 // TODO?
-static struct perf_event *pacct_perf_events[NUM_CPUS][NUM_EVENTS_MAX] = { 0 };
+static struct perf_event *pacct_perf_events[NUM_CPUS][PACCT_NUM_EVENTS_MAX] = {
+	0
+};
 
 static void my_overflow_handler(struct perf_event *pev,
 				struct perf_sample_data *sample,
@@ -46,18 +49,18 @@ int pacct_counters_install(void)
 	for_each_online_cpu(cpu) {
 		switch (pacct_cpu_class_get(cpu)) {
 		case PACCT_CPU_CLASS_EFFICIENCY:
-			for (int i = 0; i < NUM_EVENTS_EFFICIENCY; i++) {
+			for (int i = 0; i < PACCT_NUM_EVENTS_EFFICIENCY; i++) {
 				pacct_perf_events[cpu][i] = install_counter(
-					events_efficiency[i], cpu);
+					pacct_events_efficiency[i], cpu);
 				if (pacct_perf_events[cpu][i] == NULL) {
 					goto err;
 				}
 			}
 			break;
 		case PACCT_CPU_CLASS_PERFORMANCE:
-			for (int i = 0; i < NUM_EVENTS_PERFORMANCE; i++) {
+			for (int i = 0; i < PACCT_NUM_EVENTS_PERFORMANCE; i++) {
 				pacct_perf_events[cpu][i] = install_counter(
-					events_performance[i], cpu);
+					pacct_events_performance[i], cpu);
 				if (pacct_perf_events[cpu][i] == NULL) {
 					goto err;
 				}
@@ -85,7 +88,7 @@ void pacct_counters_uninstall(void)
 {
 	pr_info("uninstalling counters\n");
 	for (int cpu = 0; cpu < NUM_CPUS; cpu++) {
-		for (int i = 0; i < NUM_EVENTS_MAX; i++) {
+		for (int i = 0; i < PACCT_NUM_EVENTS_MAX; i++) {
 			uninstall_counter(pacct_perf_events[cpu][i]);
 		}
 	}
@@ -93,7 +96,8 @@ void pacct_counters_uninstall(void)
 
 u64 pacct_counter_read_local(unsigned int counter)
 {
-	if (PACCT_ERROR_TRACE(counter_bad_read, counter >= NUM_EVENTS_MAX)) {
+	if (PACCT_ERROR_TRACE(counter_bad_read,
+			      counter >= PACCT_NUM_EVENTS_MAX)) {
 		return 0;
 	}
 	int me = get_cpu();

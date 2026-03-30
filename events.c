@@ -14,8 +14,7 @@ struct pacct_event pacct_events_efficiency[PACCT_NUM_EVENTS_EFFICIENCY] = {
 	{ .code = 0x24, .umask = 0x01, .coeff = 0 },
 };
 
-#define COUNTER_SCALE 100000000
-#define SCALE_COUNTER(counter) ((s64)((double)COUNTER_SCALE * (counter)))
+#define SCALE_COUNTER(counter) ((s64)((double)PACCT_COEFF_SCALE * (counter)))
 
 struct pacct_event pacct_events_performance[PACCT_NUM_EVENTS_PERFORMANCE] = {
 	{
@@ -53,7 +52,6 @@ struct pacct_event pacct_events_performance[PACCT_NUM_EVENTS_PERFORMANCE] = {
 		.code = 0x20,
 		.umask = 0x01,
 		.coeff = SCALE_COUNTER(0.0008327786226836792),
-		.coeff_performance = SCALE_COUNTER(0.0008327786226836792),
 	},
 	{
 		// Demand Data Read requests sent to uncore

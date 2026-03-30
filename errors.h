@@ -19,6 +19,8 @@
 #ifndef PACCT_ERRORS_H
 #define PACCT_ERRORS_H
 
+#include <linux/types.h>
+
 // TODO these should be atomic probably
 // TODO could make this branchless by using array with index 0, 1
 struct pacct_error_trace {
@@ -41,6 +43,7 @@ int pacct_error_trace(struct pacct_error_trace *tr, int cond);
 	PACCT_ERROR_TRANSFORM(sched_switch_prev_counter_got_smaller) \
 	PACCT_ERROR_TRANSFORM(sched_switch_next_no_traced_task)      \
 	PACCT_ERROR_TRANSFORM(sched_switch_next_already_running)     \
+	PACCT_ERROR_TRANSFORM(sched_exit_no_traced_task)             \
 	PACCT_ERROR_TRANSFORM(read_event_count_run_ena_mismatch)     \
 	PACCT_ERROR_TRANSFORM(read_event_count_run_ena_mismatch_big) \
 	PACCT_ERROR_TRANSFORM(counter_bad_read)                      \

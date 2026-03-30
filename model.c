@@ -1,5 +1,8 @@
 #define pr_fmt(fmt) "%s:%s():%d: " fmt, KBUILD_MODNAME, __func__, __LINE__
 
+#include <linux/overflow.h>
+#include <linux/timekeeping.h>
+
 #include "model.h"
 #include "errors.h"
 
@@ -19,7 +22,7 @@
 		}                                                       \
 	} while (0)
 
-int pacct_model_eval(const struct periodic_data *pd,
+int pacct_model_eval(const struct pacct_periodic_data *pd,
 		     u64 *restrict energy_uj_out,
 		     u64 *restrict power_wallclock_mW_out,
 		     u64 *restrict power_cpu_mW_out)
@@ -28,23 +31,25 @@ int pacct_model_eval(const struct periodic_data *pd,
 	s64 acc_performance = 0;
 
 	s64 time_diff = (s64)ktime_get_ns() - (s64)pd->time_start_ns;
-	if (PACCT_ERROR_TRACE(model_bad_time, time_diff <= 0)) {
+	if (PACCT_ERROR_TRACE(model_bad_time,
+			      pd->time_start_ns == 0 || time_diff <= 0)) {
 		goto bad;
 	}
 
-	// TODO IS_ERR() on the events, and NULL check?
-	for (int i = 0; i < PACCT_TRACED_EVENT_COUNT; i++) {
-		s64 val;
+	s64 val;
+	for (int i = 0; i < PACCT_NUM_EVENTS_EFFICIENCY; i++) {
 		CHECKED_MUL(&val, pd->counter_diff_efficiency[i],
-			    pacct_events[i].coeff_efficiency);
+			    pacct_events_efficiency[i].coeff);
 		CHECKED_ADD(&acc_efficiency, acc_efficiency, val);
+	}
+	for (int i = 0; i < PACCT_NUM_EVENTS_PERFORMANCE; i++) {
 		CHECKED_MUL(&val, pd->counter_diff_performance[i],
-			    pacct_events[i].coeff_performance);
+			    pacct_events_performance[i].coeff);
 		CHECKED_ADD(&acc_performance, acc_performance, val);
 	}
 	s64 acc;
 	CHECKED_ADD(&acc, acc_efficiency, acc_performance);
-	s64 energy_uj = acc / COUNTER_SCALE;
+	s64 energy_uj = acc / PACCT_COEFF_SCALE;
 	PACCT_ERROR_TRACE(model_zero_energy, energy_uj == 0);
 	if (PACCT_ERROR_TRACE(model_negative_energy, energy_uj < 0)) {
 		// TODO better way?
@@ -62,8 +67,7 @@ int pacct_model_eval(const struct periodic_data *pd,
 	*power_cpu_mW_out = power_cpu_mW;
 	return 0;
 bad:
-	*energy_uj_out =
-		0; // TODO this needs to be summed on the total, other values can be used directly.
+	*energy_uj_out = 0;
 	*power_wallclock_mW_out = 0;
 	*power_cpu_mW_out = 0;
 	return -1;

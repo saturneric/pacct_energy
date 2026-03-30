@@ -1,6 +1,9 @@
 #ifndef TRACED_TASK_H
 #define TRACED_TASK_H
 
+#include <linux/spinlock_types.h>
+#include <linux/kref.h>
+
 #include "events.h"
 
 extern struct list_head pacct_traced_tasks;
@@ -50,26 +53,27 @@ void pacct_traced_tasks_init(void);
 void pacct_traced_tasks_clean(void);
 
 /*
- * Allocates memory for a new `traced_task`.
+ * Attempts to fetch a task from the task list, by `pid`.
+ * Increments the refcount of the found task.
  * Can be called from atomic context.
+ *
  * Doesn't do full initialization; you must call `traced_task_setup`
  * sometime after from a non-atomic context.
- * Only use this struct once `ready` is set to `true`.
  *
- * May return `NULL` if memory is exhausted.
+ * `out` may be `NULL`, in which case the refcount is not increased.
+ *
+ * If not found, allocates memory for a new `traced_task` and puts it in the list.
+ * Returns 0 on success.
  */
-struct pacct_traced_task *pacct_traced_task_create(pid_t pid);
+int pacct_traced_task_get_or_create(pid_t pid, bool create,
+				    struct pacct_traced_task **out);
+
 /*
  * Non-atomic setup.
  * Once done, sets `ready` to `true`.
  */
 int pacct_traced_task_setup(struct pacct_traced_task *tt);
-/*
- * Attempts to fetch a task from the task list, by `pid`.
- * Increments the refcount of the found task.
- * Returns `NULL` if not found.
- */
-struct pacct_traced_task *traced_task_get(pid_t pid);
+
 /*
  * Releases a traced task after all references have gone.
  */

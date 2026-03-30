@@ -4,7 +4,7 @@
 #include <linux/pm_qos.h>
 #include <linux/cpufreq.h>
 
-#include "pacct.h"
+#include "powercap.h"
 
 // CPU frequency scaling policy for P-cores
 struct cap_policy {
@@ -73,7 +73,7 @@ static void update_policy_max(struct cap_policy *c, s32 max_khz)
 	freq_qos_update_request(&c->max_req, max_khz);
 }
 
-void powercap_cleanup_caps(void)
+void pacct_powercap_cleanup_caps(void)
 {
 	for (int i = 0; i < cap_cnt; i++) {
 		if (caps[i].req_added)
@@ -111,7 +111,7 @@ void pacct_powercap_control_step(u64 pkg_power_mW)
 	}
 }
 
-int powercap_init_caps(void)
+int pacct_powercap_init_caps(void)
 {
 	int cpu, ret;
 
@@ -123,7 +123,7 @@ int powercap_init_caps(void)
 		if (ret && ret != -ENODEV) {
 			pr_err("add_policy_cap_for_cpu cpu=%d ret=%d\n", cpu,
 			       ret);
-			powercap_cleanup_caps();
+			pacct_powercap_cleanup_caps();
 			return ret;
 		}
 	}

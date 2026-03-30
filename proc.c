@@ -5,6 +5,7 @@
 #include <linux/slab.h>
 #include <linux/debugfs.h>
 
+#include "traced-task.h"
 #include "proc.h"
 
 #define PACCT_PROC_DIR "pacct_energy"
@@ -49,9 +50,10 @@ static int setup_global_proc_file(void)
 			 &global_stats.energy_rapl);
 	proc_create_data("power_rapl_mW", ACCESS_RIGHTS, total_stats_dir, &ops,
 			 &global_stats.power_rapl);
+	return 0;
 }
 
-int pacct_proc_file_setup(struct traced_task *entry)
+int pacct_proc_file_setup(struct pacct_traced_task *entry)
 {
 	if (entry->process_dir != NULL || pacct_proc_dir == NULL) {
 		return -1;
@@ -76,7 +78,7 @@ int pacct_proc_file_setup(struct traced_task *entry)
 	return 0;
 }
 
-void pacct_proc_file_free(struct traced_task *entry)
+void pacct_proc_file_free(struct pacct_traced_task *entry)
 {
 	if (entry->process_dir != NULL) {
 		proc_remove(entry->process_dir);

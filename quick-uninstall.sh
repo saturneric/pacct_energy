@@ -5,4 +5,4 @@ set -e
 sudo rmmod pacct_energy
 
 # Display the contents of the log file
-sudo dmesg | tail -n 256
+# sudo dmesg | tail -n 256

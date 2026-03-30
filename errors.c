@@ -1,5 +1,7 @@
 #include "errors.h"
 
+#include <linux/printk.h>
+
 struct pacct_errors pacct_errors = { 0 };
 
 #define PACCT_ERROR_TRANSFORM(name)                                      \
