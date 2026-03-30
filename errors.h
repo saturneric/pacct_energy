@@ -36,6 +36,7 @@ int pacct_error_trace(struct pacct_error_trace *tr, int cond);
 	PACCT_ERROR_TRANSFORM(model_overflow_mul)                    \
 	PACCT_ERROR_TRANSFORM(model_overflow_add)                    \
 	PACCT_ERROR_TRANSFORM(model_negative_energy)                 \
+	PACCT_ERROR_TRANSFORM(model_zero_runtime)                    \
 	PACCT_ERROR_TRANSFORM(model_zero_energy)                     \
 	PACCT_ERROR_TRANSFORM(sched_switch_prev_no_traced_task)      \
 	PACCT_ERROR_TRANSFORM(sched_switch_prev_not_running)         \

@@ -15,9 +15,10 @@
 #include "model.h"
 #include "wq.h"
 #include "powercap.h"
+#include "test-tracing.h"
 
 #define PACCT_SETUP_BUDGET 32
-#define ENERGY_ESTIMATE_PERIOD_MS 30
+#define ENERGY_ESTIMATE_PERIOD_MS 50
 #define TOTAL_POWER_GATHER_PERIOD_MS 150
 
 extern u64 last_pkg_raw, last_ns;
@@ -131,43 +132,66 @@ static void pacct_estimate_traced_task_energy(struct pacct_traced_task *e)
 	// TODO not sure if this is the spinlock variant we want.
 	// But this one should always work.
 	spin_lock_irqsave(&e->periodic_lock, flags);
-	extern struct pacct_traced_task *temp_first_scheduled;
-	if (temp_first_scheduled == e) {
-		pr_info("%p's periodic_data {\n", e);
-		pr_info("  elapsed time (ns): %llu\n",
-			ktime_get_ns() - e->periodic_data.time_start_ns);
-		pr_info("  time on effi (ns): %llu\n",
-			e->periodic_data.time_efficiency_ns);
-		pr_info("  time on perf (ns): %llu\n",
-			e->periodic_data.time_performance_ns);
-		// TODO hard-coded
-		pr_info("  counter diff effi: %llu %llu %llu %llu\n",
-			e->periodic_data.counter_diff_efficiency[0],
-			e->periodic_data.counter_diff_efficiency[1],
-			e->periodic_data.counter_diff_efficiency[2],
-			e->periodic_data.counter_diff_efficiency[3]);
-		pr_info("  counter diff perf: %llu %llu %llu %llu %llu %llu %llu %llu\n",
-			e->periodic_data.counter_diff_performance[0],
-			e->periodic_data.counter_diff_performance[1],
-			e->periodic_data.counter_diff_performance[2],
-			e->periodic_data.counter_diff_performance[3],
-			e->periodic_data.counter_diff_performance[4],
-			e->periodic_data.counter_diff_performance[5],
-			e->periodic_data.counter_diff_performance[6],
-			e->periodic_data.counter_diff_performance[7]);
-		pr_info("}\n");
+	for (int i = 0; i < PACCT_TEST_TRACING_NUM; i++) {
+		if (pacct_test_traces[i].tt == e) {
+			pr_info("test-task %d's periodic_data {\n", i);
+			if (e->periodic_data.time_efficiency_ns +
+				    e->periodic_data.time_performance_ns ==
+			    0) {
+				pr_info(" <runtime 0>\n");
+			} else {
+				pr_info("  elapsed time (ns): %llu\n",
+					ktime_get_ns() -
+						e->periodic_data.time_start_ns);
+				pr_info("  time on effi (ns): %llu\n",
+					e->periodic_data.time_efficiency_ns);
+				pr_info("  time on perf (ns): %llu\n",
+					e->periodic_data.time_performance_ns);
+				// TODO hard-coded
+				pr_info("  counter diff effi: %llu %llu %llu %llu\n",
+					e->periodic_data
+						.counter_diff_efficiency[0],
+					e->periodic_data
+						.counter_diff_efficiency[1],
+					e->periodic_data
+						.counter_diff_efficiency[2],
+					e->periodic_data
+						.counter_diff_efficiency[3]);
+				pr_info("  counter diff perf: %llu %llu %llu %llu %llu %llu %llu %llu\n",
+					e->periodic_data
+						.counter_diff_performance[0],
+					e->periodic_data
+						.counter_diff_performance[1],
+					e->periodic_data
+						.counter_diff_performance[2],
+					e->periodic_data
+						.counter_diff_performance[3],
+					e->periodic_data
+						.counter_diff_performance[4],
+					e->periodic_data
+						.counter_diff_performance[5],
+					e->periodic_data
+						.counter_diff_performance[6],
+					e->periodic_data
+						.counter_diff_performance[7]);
+			}
+			pr_info("}\n");
+		}
 	}
 	int res = pacct_model_eval(&e->periodic_data, &energy_uj,
 				   &power_wallclock_mW, &power_cpu_mW);
 	(void)res; // no need for error handling here
-	if (temp_first_scheduled == e) {
-		if (res == 0) {
-			pr_info("--- energy_uj: %llu\n", energy_uj);
-			pr_info("--- power_wallclock_mW: %llu\n",
-				power_wallclock_mW);
-			pr_info("--- power_cpu_mW: %llu\n", power_cpu_mW);
-		} else {
-			pr_info("--- model failed\n");
+	for (int i = 0; i < PACCT_TEST_TRACING_NUM; i++) {
+		if (pacct_test_traces[i].tt == e) {
+			if (res == 0) {
+				pr_info("--- energy_uj: %llu\n", energy_uj);
+				pr_info("--- power_wallclock_mW: %llu\n",
+					power_wallclock_mW);
+				pr_info("--- power_cpu_mW: %llu\n",
+					power_cpu_mW);
+			} else {
+				pr_info("--- model failed\n");
+			}
 		}
 	}
 

@@ -11,16 +11,27 @@
 #include "wq.h"
 
 // for testing
-struct task_struct *temp_first_scheduled_ts = NULL;
-struct pacct_traced_task *temp_first_scheduled = NULL;
+#include "test-tracing.h"
+int pacct_test_traces_num = 0;
+struct pacct_test_trace pacct_test_traces[PACCT_TEST_TRACING_NUM] = { 0 };
 
 // save stats for single run and accumulate
 static int pacct_sched_switch_prev(struct task_struct *prev)
 {
-	if (prev == temp_first_scheduled_ts) {
-		pr_info("descheduling test-traced task\n");
+	if (prev->flags & PF_KTHREAD)
+		return 0;
+	for (int i = 0; i < PACCT_TEST_TRACING_NUM; i++) {
+		if (prev == pacct_test_traces[i].ts) {
+			int me = get_cpu();
+			pr_info("scheduling test-traced task %d from core %d\n",
+				i, me);
+			put_cpu();
+			break;
+		}
 	}
+
 	struct pacct_traced_task *t_prev = NULL;
+	// TODO create == false here. because exit happens before deschedule.
 	int ret = pacct_traced_task_get_or_create(prev->pid, true, &t_prev);
 	if (PACCT_ERROR_TRACE(sched_switch_prev_no_traced_task,
 			      ret || t_prev == NULL)) {
@@ -81,10 +92,18 @@ err:
 // setup next running process with current timestamp and counter values
 static int pacct_sched_switch_next(struct task_struct *next)
 {
-	// TODO this is just so we have _some_ output
-	if (temp_first_scheduled_ts == next) {
-		pr_info("scheduling test-traced task");
+	if (next->flags & PF_KTHREAD)
+		return 0;
+	for (int i = 0; i < PACCT_TEST_TRACING_NUM; i++) {
+		if (next == pacct_test_traces[i].ts) {
+			int me = get_cpu();
+			pr_info("scheduling test-traced task %d on core %d\n",
+				i, me);
+			put_cpu();
+			break;
+		}
 	}
+
 	struct pacct_traced_task *t_next = NULL;
 	int ret = pacct_traced_task_get_or_create(next->pid, true, &t_next);
 	if (PACCT_ERROR_TRACE(sched_switch_next_no_traced_task,
@@ -94,13 +113,6 @@ static int pacct_sched_switch_next(struct task_struct *next)
 	if (PACCT_ERROR_TRACE(sched_switch_next_already_running,
 			      t_next->running)) {
 		goto err;
-	}
-
-	// TODO this is just so we have _some_ output
-	if (temp_first_scheduled == NULL) {
-		temp_first_scheduled = t_next;
-		temp_first_scheduled_ts = next;
-		pr_info("scheduling test-traced task");
 	}
 
 	int me = get_cpu();
@@ -123,11 +135,8 @@ static void pacct_sched_switch(void *ignore, bool preempt,
 			       struct task_struct *prev,
 			       struct task_struct *next)
 {
-	// Don't trace kernel threads
-	if (!(prev->flags & PF_KTHREAD))
-		pacct_sched_switch_prev(prev);
-	if (!(next->flags & PF_KTHREAD))
-		pacct_sched_switch_next(next);
+	pacct_sched_switch_prev(prev);
+	pacct_sched_switch_next(next);
 }
 
 static void pacct_process_fork(void *ignore, struct task_struct *parent,
@@ -137,11 +146,24 @@ static void pacct_process_fork(void *ignore, struct task_struct *parent,
 	if (child->flags & PF_KTHREAD)
 		return;
 
-	int ret = pacct_traced_task_get_or_create(child->pid, true, NULL);
+	int test_init = -1;
+	if (pacct_test_traces_num < PACCT_TEST_TRACING_NUM) {
+		test_init = pacct_test_traces_num++;
+		pr_info("forking test-traced task %d\n", test_init);
+		pacct_test_traces[test_init].ts = child;
+	}
+
+	struct pacct_traced_task *tt;
+	int ret = pacct_traced_task_get_or_create(child->pid, true, &tt);
 	if (ret) {
 		pr_err("could not create traced task for PID %d\n", child->pid);
 		return;
 	}
+
+	if (test_init != -1) {
+		pacct_test_traces[test_init].tt = tt;
+	}
+	kref_put(&tt->ref_count, pacct_traced_task_release);
 	// pacct_queue_setup_work(); TODO removed here for now
 }
 
@@ -151,6 +173,14 @@ static void pacct_process_exit(void *ignore, struct task_struct *p)
 	// Don't trace kernel threads
 	if (p->flags & PF_KTHREAD)
 		return;
+
+	for (int i = 0; i < PACCT_TEST_TRACING_NUM; i++) {
+		if (p == pacct_test_traces[i].ts) {
+			pr_info("exiting test-traced task %d\n", i);
+			break;
+		}
+	}
+
 	struct pacct_traced_task *e = NULL;
 	int ret = pacct_traced_task_get_or_create(p->pid, false, &e);
 	if (PACCT_ERROR_TRACE(sched_exit_no_traced_task, ret)) {

@@ -10,7 +10,7 @@
 	do {                                                            \
 		if (PACCT_ERROR_TRACE(model_overflow_add,               \
 				      check_add_overflow(a, b, res))) { \
-			goto bad;                                       \
+			return -1;                                      \
 		}                                                       \
 	} while (0)
 
@@ -18,7 +18,7 @@
 	do {                                                            \
 		if (PACCT_ERROR_TRACE(model_overflow_mul,               \
 				      check_mul_overflow(a, b, res))) { \
-			goto bad;                                       \
+			return -1;                                      \
 		}                                                       \
 	} while (0)
 
@@ -27,13 +27,25 @@ int pacct_model_eval(const struct pacct_periodic_data *pd,
 		     u64 *restrict power_wallclock_mW_out,
 		     u64 *restrict power_cpu_mW_out)
 {
+	// set to default values for early return
+	*energy_uj_out = 0;
+	*power_wallclock_mW_out = 0;
+	*power_cpu_mW_out = 0;
+
 	s64 acc_efficiency = 0;
 	s64 acc_performance = 0;
 
 	s64 time_diff = (s64)ktime_get_ns() - (s64)pd->time_start_ns;
 	if (PACCT_ERROR_TRACE(model_bad_time,
 			      pd->time_start_ns == 0 || time_diff <= 0)) {
-		goto bad;
+		return -1;
+	}
+
+	if (PACCT_ERROR_TRACE(
+		    model_zero_runtime,
+		    pd->time_efficiency_ns + pd->time_performance_ns == 0)) {
+		// haven't been running at all.
+		return 0;
 	}
 
 	s64 val;
@@ -66,9 +78,4 @@ int pacct_model_eval(const struct pacct_periodic_data *pd,
 	*power_wallclock_mW_out = power_wallclock_mW;
 	*power_cpu_mW_out = power_cpu_mW;
 	return 0;
-bad:
-	*energy_uj_out = 0;
-	*power_wallclock_mW_out = 0;
-	*power_cpu_mW_out = 0;
-	return -1;
 }
