@@ -6,6 +6,8 @@
 #include "model.h"
 #include "errors.h"
 
+// #define PACCT_DEBUG_MODEL
+
 #define CHECKED_ADD(res, a, b)                                          \
 	do {                                                            \
 		if (PACCT_ERROR_TRACE(model_overflow_add,               \
@@ -66,6 +68,25 @@ int pacct_model_eval(const struct pacct_periodic_data *pd,
 	if (PACCT_ERROR_TRACE(model_negative_energy, energy_uj < 0)) {
 		// TODO better way?
 		energy_uj = 0;
+#ifdef PACCT_DEBUG_MODEL
+		pr_info("negative energy\n");
+		pr_info("  counter diff effi: %llu %llu %llu %llu\n",
+			pd->counter_diff_efficiency[0],
+			pd->counter_diff_efficiency[1],
+			pd->counter_diff_efficiency[2],
+			pd->counter_diff_efficiency[3]
+		);
+		pr_info("  counter diff perf: %llu %llu %llu %llu %llu %llu %llu %llu\n",
+			pd->counter_diff_performance[0],
+			pd->counter_diff_performance[1],
+			pd->counter_diff_performance[2],
+			pd->counter_diff_performance[3],
+			pd->counter_diff_performance[4],
+			pd->counter_diff_performance[5],
+			pd->counter_diff_performance[6],
+			pd->counter_diff_performance[7]
+		);
+#endif
 	}
 	CHECKED_MUL(&acc, energy_uj, 1000000LL);
 	s64 power_wallclock_mW = div64_s64(acc, time_diff);
