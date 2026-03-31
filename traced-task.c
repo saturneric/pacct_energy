@@ -11,6 +11,7 @@ struct list_head pacct_traced_tasks;
 struct list_head pacct_retiring_traced_tasks;
 // Lock to protect access to the traced_tasks list
 spinlock_t pacct_traced_tasks_lock;
+// Work struct for retiring tasks
 extern struct work_struct pacct_retire_work;
 
 void pacct_traced_tasks_init(void)
