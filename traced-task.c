@@ -35,6 +35,7 @@ int pacct_traced_task_setup(struct pacct_traced_task *entry)
 {
 	(void)pacct_proc_file_setup(entry);
 	WRITE_ONCE(entry->ready, 1);
+	WRITE_ONCE(entry->setup_in_progress, 0);
 	return 0;
 }
 

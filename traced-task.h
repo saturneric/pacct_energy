@@ -26,6 +26,7 @@ struct pacct_traced_task {
 
 	bool ready;
 	bool retiring;
+	bool setup_in_progress;
 
 	// data for a single scheduling
 	bool running;

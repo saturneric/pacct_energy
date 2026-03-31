@@ -86,8 +86,10 @@ static bool pick_one_not_ready_candidate(struct pacct_traced_task **out)
 
 	spin_lock(&pacct_traced_tasks_lock);
 	list_for_each_entry(e, &pacct_traced_tasks, list) {
-		if (!READ_ONCE(e->ready)) {
+		if (!READ_ONCE(e->ready) && !READ_ONCE(e->retiring) &&
+		    !READ_ONCE(e->setup_in_progress)) {
 			kref_get(&e->ref_count);
+			WRITE_ONCE(e->setup_in_progress, 1);
 			*out = e;
 			break;
 		}

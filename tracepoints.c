@@ -282,6 +282,7 @@ static void pacct_process_fork(void *ignore, struct task_struct *parent,
 	if (test_init != -1) {
 		pacct_test_traces[test_init].tt = tt;
 	}
+
 	kref_put(&tt->ref_count, pacct_traced_task_release);
 	pacct_queue_setup_work();
 }
@@ -321,6 +322,10 @@ static void pacct_process_exit(void *ignore, struct task_struct *p)
 	spin_unlock(&pacct_traced_tasks_lock);
 
 	kref_put(&e->ref_count, pacct_traced_task_release);
+
+	// queue work to free the proc file and kobject after a delay, to give time
+	// for any in-flight samples to complete.
+	pacct_queue_retire_work();
 }
 
 static struct tracepoint *tp_sched_switch = NULL;
