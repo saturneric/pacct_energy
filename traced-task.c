@@ -11,6 +11,7 @@ struct list_head pacct_traced_tasks;
 struct list_head pacct_retiring_traced_tasks;
 // Lock to protect access to the traced_tasks list
 spinlock_t pacct_traced_tasks_lock;
+extern struct work_struct pacct_retire_work;
 
 void pacct_traced_tasks_init(void)
 {
@@ -75,6 +76,9 @@ int pacct_traced_task_get_or_create(pid_t pid, bool create,
 	memset(&entry->periodic_data, 0, sizeof(entry->periodic_data));
 	entry->periodic_data.time_start_ns = ktime_get_ns();
 
+	// itd fields
+	spin_lock_init(&entry->itd_sampling_lock);
+
 	list_add_tail(&entry->list, &pacct_traced_tasks);
 out:
 	kref_get(&entry->ref_count);
@@ -94,7 +98,9 @@ void pacct_traced_task_release(struct kref *kref)
 	struct pacct_traced_task *entry =
 		container_of(kref, struct pacct_traced_task, ref_count);
 
-	pacct_proc_file_free(entry);
+	// Mark this task as retiring so that the sample_workfn can skip it if it hasn't run yet
+	WRITE_ONCE(entry->retiring, true);
 
-	kfree(entry);
+	list_add_tail(&entry->retire_node, &pacct_retiring_traced_tasks);
+	queue_work(system_unbound_wq, &pacct_retire_work);
 }

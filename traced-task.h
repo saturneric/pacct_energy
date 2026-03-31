@@ -6,6 +6,8 @@
 
 #include "events.h"
 
+#define PACCT_ITD_MAX_CLASSES 8
+
 extern struct list_head pacct_traced_tasks;
 extern struct list_head pacct_retiring_traced_tasks;
 extern spinlock_t pacct_traced_tasks_lock;
@@ -40,6 +42,18 @@ struct pacct_traced_task {
 	u64 energy_uj; // total energy used by this process
 	u64 power_wallclock_mW;
 	u64 power_cpu_mW;
+
+	// ITD classid for this task
+	// 0 is unclassified which should not be used
+	// other values are assigned by ITD and are meaningful
+	spinlock_t itd_sampling_lock;
+	u64 itd_classid;
+	u64 itd_sample_count;
+
+	// Count of samples for each ITD classid, indexed by classid.
+	// This is used to determine the distribution of ITD classifications for this task.
+	// large enough to avoid memory overflow
+	u64 itd_classid_count[PACCT_ITD_MAX_CLASSES];
 
 	struct proc_dir_entry *process_dir; // Associated file under proc
 };

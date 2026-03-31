@@ -307,21 +307,21 @@ static void pacct_process_exit(void *ignore, struct task_struct *p)
 		return;
 	}
 
-	// Mark this task as retiring so that the sample_workfn can skip it if it hasn't run yet
-	// TODO: Is it not already skipped by not being in the list?
-	// TODO: How can the final counters be measured? Do even want to? (The proc file which would display the values will be deleted anyway)
-	WRITE_ONCE(e->retiring, true);
-
 	// remove from traced_tasks
 	spin_lock(&pacct_traced_tasks_lock);
 	list_del_init(&e->list);
 
-	// add to retiring_traced_tasks for cleanup
-	list_add_tail(&e->retire_node, &pacct_retiring_traced_tasks);
-
 	spin_unlock(&pacct_traced_tasks_lock);
 
 	kref_put(&e->ref_count, pacct_traced_task_release);
+
+	// the refcount should be 0 at this point, but if not, we can still safely
+	// free the proc file and memory here because the task is exiting and won't be
+	// scheduled anymore. The retiring work will check the refcount again before
+	// freeing and warn if it's not 0.
+	if (kref_put(&e->ref_count, pacct_traced_task_release)) {
+		// pr_warn("Traced task was not released during exit: refcount != 0");
+	}
 
 	// queue work to free the proc file and kobject after a delay, to give time
 	// for any in-flight samples to complete.
