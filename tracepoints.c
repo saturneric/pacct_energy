@@ -31,8 +31,7 @@ static int pacct_sched_switch_prev(struct task_struct *prev)
 	}
 
 	struct pacct_traced_task *t_prev = NULL;
-	// TODO create == false here. because exit happens before deschedule.
-	int ret = pacct_traced_task_get_or_create(prev->pid, true, &t_prev);
+	int ret = pacct_traced_task_get_or_create(prev->pid, false, &t_prev);
 	if (PACCT_ERROR_TRACE(sched_switch_prev_no_traced_task,
 			      ret || t_prev == NULL)) {
 		return -1;
@@ -105,6 +104,7 @@ static int pacct_sched_switch_next(struct task_struct *next)
 	}
 
 	struct pacct_traced_task *t_next = NULL;
+	// NOTE: we may also create the traced_task struct here.
 	int ret = pacct_traced_task_get_or_create(next->pid, true, &t_next);
 	if (PACCT_ERROR_TRACE(sched_switch_next_no_traced_task,
 			      ret || t_next == NULL)) {

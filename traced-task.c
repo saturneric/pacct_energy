@@ -85,6 +85,7 @@ out:
 	return 0;
 }
 
+// TODO the release function should be atomic! move to retiring list
 void pacct_traced_task_release(struct kref *kref)
 {
 	struct pacct_traced_task *entry =
