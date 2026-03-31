@@ -16,6 +16,7 @@
 #include "wq.h"
 #include "powercap.h"
 #include "test-tracing.h"
+#include "proc.h"
 
 #define PACCT_SETUP_BUDGET 32
 #define ENERGY_ESTIMATE_PERIOD_MS 50
@@ -149,15 +150,15 @@ static void pacct_retire_workfn(struct work_struct *work)
 		list_del_init(&e->retire_node);
 		spin_unlock(&pacct_traced_tasks_lock);
 
-		if (kref_put(&e->ref_count, pacct_traced_task_release)) {
-			pr_warn("Traced task was not released during retiring: refcount != 0");
-		}
+		// cleanup the entry
+		pacct_proc_file_free(e);
+		kfree(e);
 
 		cond_resched();
 	}
 }
 
-static DECLARE_WORK(pacct_retire_work, pacct_retire_workfn);
+DECLARE_WORK(pacct_retire_work, pacct_retire_workfn);
 
 void pacct_queue_retire_work(void)
 {
