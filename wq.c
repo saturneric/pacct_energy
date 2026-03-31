@@ -30,6 +30,49 @@ module_param(enable_power_cap, bool, 0644);
 
 // --- Setup tasks ------
 
+// Add all existing processes to our traced_tasks list to be initialized later
+static void pacct_scan_tasks_workfn(struct work_struct *work)
+{
+	struct task_struct *task;
+
+	// Iterate over all existing tasks and add them to the traced_tasks list if
+	// they are not kernel threads.
+	for_each_process(task) {
+		struct task_struct *ts = task;
+
+		get_task_struct(ts);
+
+		if (ts->flags & PF_KTHREAD) { //Ignore kernel
+			put_task_struct(ts);
+			continue;
+		}
+
+		{
+			struct pacct_traced_task *e;
+			int ret = pacct_traced_task_get_or_create(ts->pid, true, &e);
+			if (ret) {
+				pr_err("Failed to get or create traced task for PID %d\n",
+				       ts->pid);
+				put_task_struct(ts);
+				continue;
+			}
+
+			kref_put(&e->ref_count, pacct_traced_task_release);
+		}
+
+		put_task_struct(ts);
+	}
+
+	pacct_queue_setup_work();
+}
+
+static DECLARE_DELAYED_WORK(pacct_scan_tasks_work, pacct_scan_tasks_workfn);
+
+void pacct_queue_scan_tasks(void)
+{
+	schedule_delayed_work(&pacct_scan_tasks_work, msecs_to_jiffies(100));
+}
+
 /*
  * Picks an element of traced_tasks, which is not set up yet.
  * Increases refcount if found.
@@ -68,8 +111,6 @@ static void pacct_setup_workfn(struct work_struct *work)
 		int ret = pacct_traced_task_setup(e);
 		if (unlikely(ret != 0)) {
 			pr_alert("Failed to set up task. Trying again later");
-		} else {
-			WRITE_ONCE(e->ready, 1);
 		}
 
 		kref_put(&e->ref_count, pacct_traced_task_release);

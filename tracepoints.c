@@ -164,7 +164,7 @@ static void pacct_process_fork(void *ignore, struct task_struct *parent,
 		pacct_test_traces[test_init].tt = tt;
 	}
 	kref_put(&tt->ref_count, pacct_traced_task_release);
-	// pacct_queue_setup_work(); TODO removed here for now
+	pacct_queue_setup_work();
 }
 
 //move task from traced_tasks to retiring_traced_tasks

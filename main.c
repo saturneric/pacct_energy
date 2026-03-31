@@ -66,6 +66,9 @@ static int __init pacct_energy_init(void)
 	// Start the energy estimator work
 	pacct_queue_energy_estimator_start();
 
+	// Schedule a delayed work to scan existing tasks and create traced_task entries for them
+	pacct_queue_scan_tasks();
+
 	return 0;
 
 	// Clean up any traced tasks that might have been created before the failure

@@ -33,7 +33,9 @@ void pacct_traced_tasks_clean(void)
 
 int pacct_traced_task_setup(struct pacct_traced_task *entry)
 {
-	return pacct_proc_file_setup(entry);
+	(void)pacct_proc_file_setup(entry);
+	WRITE_ONCE(entry->ready, 1);
+	return 0;
 }
 
 int pacct_traced_task_get_or_create(pid_t pid, bool create,
