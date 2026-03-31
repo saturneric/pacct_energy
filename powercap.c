@@ -93,6 +93,7 @@ static void apply_cap_to_all(s32 cap_khz)
 
 void pacct_powercap_control_step(u64 pkg_power_mW)
 {
+	pr_info("powercap control step with %llu mW pkg power\n", pkg_power_mW);
 	if (current_cap_khz < 0) {
 		current_cap_khz = caps[0].policy->cpuinfo.max_freq;
 		apply_cap_to_all(current_cap_khz);

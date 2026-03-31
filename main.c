@@ -13,6 +13,7 @@
 #include "traced-task.h"
 #include "counters.h"
 #include "wq.h"
+#include "powercap.h"
 
 MODULE_AUTHOR("pm3");
 MODULE_DESCRIPTION("Process Energy Accounting Module");
@@ -56,12 +57,11 @@ static int __init pacct_energy_init(void)
 	}
 	pr_info("registered tracepoints\n");
 
-	// Initialize the powercap interfaces and get the initial CPU frequency caps
-	// TODO ret = powercap_init_caps();
-	// if (ret) {
-	// 	pr_err("powercap init failed: %d\n", ret);
-	// 	goto err_counters;
-	// }
+	ret = pacct_powercap_init_caps();
+	if (ret) {
+		pr_err("powercap init failed: %d\n", ret);
+		goto err_tracepoints;
+	}
 
 	// Start the energy estimator work
 	pacct_queue_energy_estimator_start();
@@ -72,7 +72,7 @@ static int __init pacct_energy_init(void)
 	return 0;
 
 	// Clean up any traced tasks that might have been created before the failure
-	// clean_traced_task();
+	// TODO clean_traced_task();
 
 err_tracepoints:
 	pacct_tracepoints_unregister();
@@ -85,17 +85,13 @@ err:
 static void __exit pacct_energy_exit(void)
 {
 	pacct_queue_energy_estimator_stop();
-
+	pacct_powercap_cleanup_caps();
 	pacct_traced_tasks_clean();
-	// Stop the energy estimator work by first
-	// pacct_stop_energy_estimator();
-
-	// Clean up for powercap policies and interfaces
-	// powercap_cleanup_caps();
-
 	pacct_tracepoints_unregister();
 	pacct_counters_uninstall();
 	pacct_proc_remove();
+
+	// TODO clean traced tasks
 
 	pacct_error_report();
 

@@ -9,4 +9,4 @@ make
 sync
 
 # Insert the kernel module
-sudo modprobe ./pacct_energy.ko enable_power_cap=0 target_mW=25000
+sudo modprobe ./pacct_energy.ko enable_power_cap=1 target_mW=25000
