@@ -15,11 +15,19 @@
 int pacct_test_traces_num = 0;
 struct pacct_test_trace pacct_test_traces[PACCT_TEST_TRACING_NUM] = { 0 };
 
+struct pacct_cpu_timer_ctx {
+	struct hrtimer timer;
+	u64 interval_ns;
+};
+
+static DEFINE_PER_CPU(struct pacct_cpu_timer_ctx, pacct_cpu_timers);
+
 // save stats for single run and accumulate
 static int pacct_sched_switch_prev(struct task_struct *prev)
 {
 	if (prev->flags & PF_KTHREAD)
 		return 0;
+
 	for (int i = 0; i < PACCT_TEST_TRACING_NUM; i++) {
 		if (prev == pacct_test_traces[i].ts) {
 			int me = get_cpu();
@@ -49,6 +57,11 @@ static int pacct_sched_switch_prev(struct task_struct *prev)
 		goto err;
 	}
 
+	// accumulate
+	unsigned long flags;
+	// TODO is this the right variant?
+	spin_lock_irqsave(&t_prev->periodic_lock, flags);
+
 	enum pacct_cpu_class class = pacct_cpu_class_get(task_cpu(prev));
 	u64 time_diff = ktime_get_ns() - t_prev->run_start_ns;
 	u64 counter_diff[PACCT_NUM_EVENTS_MAX];
@@ -61,10 +74,7 @@ static int pacct_sched_switch_prev(struct task_struct *prev)
 		}
 		counter_diff[i] = (u64)diff;
 	}
-	// accumulate
-	unsigned long flags;
-	// TODO is this the right variant?
-	spin_lock_irqsave(&t_prev->periodic_lock, flags);
+
 	if (class == PACCT_CPU_CLASS_EFFICIENCY) {
 		t_prev->periodic_data.time_efficiency_ns += time_diff;
 		for (int i = 0; i < PACCT_NUM_EVENTS_EFFICIENCY; i++) {
@@ -110,24 +120,121 @@ static int pacct_sched_switch_next(struct task_struct *next)
 			      ret || t_next == NULL)) {
 		return -1;
 	}
+
 	if (PACCT_ERROR_TRACE(sched_switch_next_already_running,
 			      t_next->running)) {
 		goto err;
 	}
 
 	int me = get_cpu();
+
+	unsigned long flags;
+	spin_lock_irqsave(&t_next->periodic_lock, flags);
+
 	t_next->run_start_ns = ktime_get_ns();
 	for (int i = 0; i < PACCT_NUM_EVENTS_ON_CPU(me); i++) {
 		t_next->counter_start[i] = pacct_counter_read_local(i);
 	}
 
 	t_next->current_cpu = me; // only for testing
+	spin_unlock_irqrestore(&t_next->periodic_lock, flags);
+
 	put_cpu();
 	WRITE_ONCE(t_next->running, true);
 	kref_put(&t_next->ref_count, pacct_traced_task_release);
 	return 0;
 err:
 	kref_put(&t_next->ref_count, pacct_traced_task_release);
+	return -1;
+}
+
+static int pacct_flush_running_current(struct task_struct *p)
+{
+	struct pacct_traced_task *t = NULL;
+	unsigned long flags;
+	enum pacct_cpu_class class;
+	u64 now_ns;
+	u64 counter_now[PACCT_NUM_EVENTS_MAX];
+	int cpu;
+	int ret;
+
+	if (p->flags & PF_KTHREAD)
+		return 0;
+
+	for (int i = 0; i < PACCT_TEST_TRACING_NUM; i++) {
+		if (p == pacct_test_traces[i].ts) {
+			pr_info("flushing test-traced task %d on core %d\n", i,
+				smp_processor_id());
+			break;
+		}
+	}
+
+	ret = pacct_traced_task_get_or_create(p->pid, false, &t);
+	if (PACCT_ERROR_TRACE(flush_running_no_traced_task, ret || t == NULL)) {
+		return -1;
+	}
+
+	cpu = smp_processor_id();
+	now_ns = ktime_get_ns();
+
+	spin_lock_irqsave(&t->periodic_lock, flags);
+
+	if (PACCT_ERROR_TRACE(flush_running_not_running, !t->running))
+		goto err_unlock;
+
+	if (PACCT_ERROR_TRACE(flush_running_wrong_cpu, cpu != t->current_cpu))
+		goto err_unlock;
+
+	class = pacct_cpu_class_get(cpu);
+
+	for (int i = 0; i < PACCT_NUM_EVENTS_ON_CLASS(class); i++) {
+		counter_now[i] = pacct_counter_read_local(i);
+	}
+
+	{
+		u64 time_diff = now_ns - t->run_start_ns;
+
+		if (class == PACCT_CPU_CLASS_EFFICIENCY) {
+			t->periodic_data.time_efficiency_ns += time_diff;
+			for (int i = 0; i < PACCT_NUM_EVENTS_EFFICIENCY; i++) {
+				s64 diff = (s64)counter_now[i] -
+					   (s64)t->counter_start[i];
+				if (PACCT_ERROR_TRACE(
+					    flush_running_counter_got_smaller,
+					    diff < 0)) {
+					diff = 0;
+				}
+				t->periodic_data.counter_diff_efficiency[i] +=
+					(u64)diff;
+				t->counter_start[i] = counter_now[i];
+			}
+		} else {
+			t->periodic_data.time_performance_ns += time_diff;
+			for (int i = 0; i < PACCT_NUM_EVENTS_PERFORMANCE; i++) {
+				s64 diff = (s64)counter_now[i] -
+					   (s64)t->counter_start[i];
+				if (PACCT_ERROR_TRACE(
+					    flush_running_counter_got_smaller,
+					    diff < 0)) {
+					diff = 0;
+				}
+				t->periodic_data.counter_diff_performance[i] +=
+					(u64)diff;
+				t->counter_start[i] = counter_now[i];
+			}
+		}
+
+		// update run_start_ns to now so that the next accumulation will be correct.
+		t->run_start_ns = now_ns;
+	}
+
+	spin_unlock_irqrestore(&t->periodic_lock, flags);
+	kref_put(&t->ref_count, pacct_traced_task_release);
+	return 0;
+
+err_unlock:
+	spin_unlock_irqrestore(&t->periodic_lock, flags);
+	kref_put(&t->ref_count, pacct_traced_task_release);
 	return -1;
 }
 
@@ -259,7 +366,9 @@ int pacct_tracepoints_register(void)
 		pr_err("tracepoint_probe_register for exit failed\n");
 		goto err;
 	}
+
 	return 0;
+
 err:
 	pacct_tracepoints_unregister();
 	return ret;
@@ -272,6 +381,55 @@ err:
 			(tp) = NULL;                                           \
 		}                                                              \
 	} while (0)
+
+static enum hrtimer_restart pacct_cpu_timer_fn(struct hrtimer *timer)
+{
+	struct pacct_cpu_timer_ctx *ctx =
+		container_of(timer, struct pacct_cpu_timer_ctx, timer);
+
+	pacct_flush_running_current(current);
+
+	hrtimer_forward_now(timer, ns_to_ktime(ctx->interval_ns));
+	return HRTIMER_RESTART;
+}
+
+static void pacct_start_cpu_timer(void *info)
+{
+	struct pacct_cpu_timer_ctx *ctx = this_cpu_ptr(&pacct_cpu_timers);
+
+	hrtimer_start(&ctx->timer, ns_to_ktime(ctx->interval_ns),
+		      HRTIMER_MODE_REL_PINNED);
+}
+
+int pacct_setup_cpu_timers(u64 interval_ms)
+{
+	int cpu;
+	for_each_online_cpu(cpu) {
+		struct pacct_cpu_timer_ctx *ctx =
+			per_cpu_ptr(&pacct_cpu_timers, cpu);
+
+		ctx->interval_ns = interval_ms * 1000 * 1000ULL;
+		hrtimer_setup(&ctx->timer, pacct_cpu_timer_fn, CLOCK_MONOTONIC,
+			      HRTIMER_MODE_REL_PINNED);
+	}
+
+	for_each_online_cpu(cpu)
+		smp_call_function_single(cpu, pacct_start_cpu_timer, NULL, 1);
+	return 0;
+}
+
+static void pacct_stop_cpu_timer(void *info)
+{
+	struct pacct_cpu_timer_ctx *ctx = this_cpu_ptr(&pacct_cpu_timers);
+	hrtimer_cancel(&ctx->timer);
+}
+
+void pacct_cleanup_cpu_timers(void)
+{
+	int cpu;
+	for_each_online_cpu(cpu)
+		smp_call_function_single(cpu, pacct_stop_cpu_timer, NULL, 1);
+}
 
 void pacct_tracepoints_unregister(void)
 {

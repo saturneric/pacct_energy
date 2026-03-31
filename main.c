@@ -57,6 +57,12 @@ static int __init pacct_energy_init(void)
 	}
 	pr_info("registered tracepoints\n");
 
+	ret = pacct_setup_cpu_timers(10); // 10ms interval
+	if (ret) {
+		pr_err("could not setup CPU timers\n");
+		goto err_tracepoints;
+	}
+
 	ret = pacct_powercap_init_caps();
 	if (ret) {
 		pr_err("powercap init failed: %d\n", ret);
@@ -89,6 +95,7 @@ static void __exit pacct_energy_exit(void)
 	pacct_traced_tasks_clean();
 	pacct_tracepoints_unregister();
 	pacct_counters_uninstall();
+	pacct_cleanup_cpu_timers();
 	pacct_proc_remove();
 
 	// TODO clean traced tasks
