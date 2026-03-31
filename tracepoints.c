@@ -50,7 +50,8 @@ static int pacct_sched_switch_prev(struct task_struct *prev)
 	}
 
 	enum pacct_cpu_class class = pacct_cpu_class_get(task_cpu(prev));
-	u64 time_diff = ktime_get_ns() - t_prev->run_start_ns;
+	u64 now = ktime_get_ns();
+	u64 time_diff = now - t_prev->run_start_ns;
 	u64 counter_diff[PACCT_NUM_EVENTS_MAX];
 	for (int i = 0; i < PACCT_NUM_EVENTS_ON_CLASS(class); i++) {
 		s64 diff = (s64)pacct_counter_read_local(i) -
@@ -65,6 +66,17 @@ static int pacct_sched_switch_prev(struct task_struct *prev)
 	unsigned long flags;
 	// TODO is this the right variant?
 	spin_lock_irqsave(&t_prev->periodic_lock, flags);
+
+	// it may be that the current run started _before_ the current periodic phase.
+	// In this case, we scale to the time when we started
+	// Note that this still loses information for very long time slices.
+	if (t_prev->periodic_data.time_start_ns > t_prev->run_start_ns) {
+		u64 time_diff_in_period = now - t_prev->periodic_data.time_start_ns;
+		for (int i = 0; i < PACCT_NUM_EVENTS_ON_CLASS(class); i++) {
+			counter_diff[i] = counter_diff[i] * time_diff_in_period / time_diff;
+		}
+	}
+
 	if (class == PACCT_CPU_CLASS_EFFICIENCY) {
 		t_prev->periodic_data.time_efficiency_ns += time_diff;
 		for (int i = 0; i < PACCT_NUM_EVENTS_EFFICIENCY; i++) {
