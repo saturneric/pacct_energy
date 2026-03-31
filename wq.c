@@ -49,7 +49,8 @@ static void pacct_scan_tasks_workfn(struct work_struct *work)
 
 		{
 			struct pacct_traced_task *e;
-			int ret = pacct_traced_task_get_or_create(ts->pid, true, &e);
+			int ret = pacct_traced_task_get_or_create(ts->pid, true,
+								  &e);
 			if (ret) {
 				pr_err("Failed to get or create traced task for PID %d\n",
 				       ts->pid);

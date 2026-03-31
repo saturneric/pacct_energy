@@ -74,8 +74,7 @@ int pacct_model_eval(const struct pacct_periodic_data *pd,
 			pd->counter_diff_efficiency[0],
 			pd->counter_diff_efficiency[1],
 			pd->counter_diff_efficiency[2],
-			pd->counter_diff_efficiency[3]
-		);
+			pd->counter_diff_efficiency[3]);
 		pr_info("  counter diff perf: %llu %llu %llu %llu %llu %llu %llu %llu\n",
 			pd->counter_diff_performance[0],
 			pd->counter_diff_performance[1],
@@ -84,8 +83,7 @@ int pacct_model_eval(const struct pacct_periodic_data *pd,
 			pd->counter_diff_performance[4],
 			pd->counter_diff_performance[5],
 			pd->counter_diff_performance[6],
-			pd->counter_diff_performance[7]
-		);
+			pd->counter_diff_performance[7]);
 #endif
 	}
 	CHECKED_MUL(&acc, energy_uj, 1000000LL);

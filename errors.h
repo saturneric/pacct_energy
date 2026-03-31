@@ -48,6 +48,10 @@ int pacct_error_trace(struct pacct_error_trace *tr, int cond);
 	PACCT_ERROR_TRANSFORM(read_event_count_run_ena_mismatch)     \
 	PACCT_ERROR_TRANSFORM(read_event_count_run_ena_mismatch_big) \
 	PACCT_ERROR_TRANSFORM(counter_bad_read)                      \
+	PACCT_ERROR_TRANSFORM(flush_running_no_traced_task)          \
+	PACCT_ERROR_TRANSFORM(flush_running_not_running)             \
+	PACCT_ERROR_TRANSFORM(flush_running_wrong_cpu)               \
+	PACCT_ERROR_TRANSFORM(flush_running_counter_got_smaller)     \
 	PACCT_ERROR_TRANSFORM(counter_multiplexed)
 
 #define PACCT_ERROR_TRANSFORM(name) struct pacct_error_trace name;
